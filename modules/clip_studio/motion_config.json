@@ -1,0 +1,32 @@
+{
+  "High Action": {
+    "motion_bucket_id": 127,
+    "noise_aug_strength": 0.1,
+    "description": "高动作强度，适合快速运动场景"
+  },
+  "Cinematic Slow": {
+    "motion_bucket_id": 20,
+    "noise_aug_strength": 0.02,
+    "description": "电影级慢动作，适合静态或缓慢移动场景"
+  },
+  "Medium Motion": {
+    "motion_bucket_id": 75,
+    "noise_aug_strength": 0.05,
+    "description": "中等动作强度，适合一般场景"
+  },
+  "Subtle Movement": {
+    "motion_bucket_id": 40,
+    "noise_aug_strength": 0.03,
+    "description": "轻微动作，适合微妙的动态效果"
+  },
+  "Dynamic Fast": {
+    "motion_bucket_id": 150,
+    "noise_aug_strength": 0.12,
+    "description": "快速动态，适合激烈动作场景"
+  },
+  "Static": {
+    "motion_bucket_id": 10,
+    "noise_aug_strength": 0.01,
+    "description": "静态效果，最小化运动"
+  }
+}
