@@ -18,6 +18,8 @@ export interface Scene {
   duration: number
   /** 生成的分镜图片 URL（可选） */
   imageUrl?: string | null
+  /** 该场景中出现的角色名称数组（可选，由 Gemini 自动识别） */
+  characters?: string[]
 }
 
 /**
@@ -34,6 +36,8 @@ export interface Script {
   createdAt: string | Date
   /** 场景数组 */
   scenes: Scene[]
+  /** 所属项目 ID */
+  projectId: string | null
 }
 
 /**

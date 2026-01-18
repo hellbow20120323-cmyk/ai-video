@@ -1,0 +1,17 @@
+# AI 视频平台开发准则
+
+## 1. 技术栈与环境
+- **核心框架**: Next.js 14 (App Router), Tailwind CSS, Framer Motion.
+- **状态管理**: Zustand (使用 persist 中间件).
+- **开发环境**: 针对 Mac 系统优化，优先使用 zsh 兼容命令.
+- **设计风格**: 严格遵循 Apple 设计规范（SF Pro 字体, 磨砂玻璃效果 `backdrop-blur-xl`, 圆角 `rounded-2xl`）.
+
+## 2. 核心架构逻辑：项目制 (Project-Centric)
+- **隔离原则**: 所有的资产（Assets）、剧本（Scripts）和分镜（Storyboards）必须通过 `currentProjectId` 进行隔离过滤.
+- **状态清理**: 切换项目时，必须重置 `storyText`、`selectedScript` 和 `analysisResult` 等临时工作区状态.
+- **数据同步**: 生成剧本后，必须自动同步提取资产（角色/场景/道具）并自动生成分镜卡片.
+
+## 3. 性能与稳定性规范
+- **防止水合错误 (Hydration Fix)**: 
+  - 任何读取 LocalStorage 或依赖 Store 持久化数据的 UI 组件，必须使用 中的角色头像.
+- **反馈**: 耗时操作（如 AI 生成）必须提供进度条或平滑的加载动效.

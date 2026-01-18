@@ -11,13 +11,13 @@ interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement
   helperText?: string
 }
 
-export const Textarea: React.FC<TextareaProps> = ({
+export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(({
   label,
   error,
   helperText,
   className = '',
   ...props
-}) => {
+}, ref) => {
   return (
     <div className="w-full">
       {label && (
@@ -26,6 +26,7 @@ export const Textarea: React.FC<TextareaProps> = ({
         </label>
       )}
       <textarea
+        ref={ref}
         className={`
           w-full
           px-4 py-3
@@ -53,4 +54,6 @@ export const Textarea: React.FC<TextareaProps> = ({
       )}
     </div>
   )
-}
+})
+
+Textarea.displayName = 'Textarea'

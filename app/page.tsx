@@ -1,11 +1,13 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Script, Scene } from '@/types/script'
 import { useAssetStore } from '@/store/useAssetStore'
+import { useProjectStore } from '@/store/useProjectStore'
 import { Asset, AssetCategory } from '@/types/assets'
-import { Card, Button, Input, Textarea } from '@/app/components'
+import { Card, Button, Input, Textarea, AssetCenter, ScriptManagement, StoryboardManagement } from '@/app/components'
+import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Home as HomeIcon, 
   FileText, 
@@ -31,7 +33,11 @@ import {
   Trash2,
   Save,
   Sparkles as SparklesIcon,
-  Loader2
+  Loader2,
+  ChevronDown,
+  Folder,
+  Plus as PlusIcon,
+  Settings
 } from 'lucide-react'
 
 // --- 类型定义 ---
@@ -119,18 +125,30 @@ const voicePresets = [
   { id: 'ai-mechanical', name: 'AI机械' },
 ]
 
+// OpenAI 标准音色选项（6 种）
+const openAIVoiceOptions = [
+  { id: 'alloy', name: 'Alloy（中性、清晰）', description: '中性音色，清晰自然' },
+  { id: 'echo', name: 'Echo（回声）', description: '回声效果音色' },
+  { id: 'fable', name: 'Fable（寓言）', description: '温暖叙事音色' },
+  { id: 'onyx', name: 'Onyx（深沉男声）', description: '深沉磁性男声' },
+  { id: 'nova', name: 'Nova（年轻女声）', description: '年轻活力女声' },
+  { id: 'shimmer', name: 'Shimmer（温暖女声）', description: '温暖清晰女声' },
+]
+
 // 分镜类型
 type StoryboardStatus = 'image-generated' | 'audio-synthesized' | 'waiting-render' | 'pending'
 
 type StoryboardItem = {
   id: string
   imageUrl?: string
-  characterId: string | null
+  characterIds: string[]  // 支持多个角色
   sceneId: string | null
   dialogue: string
   visualDescription?: string  // 视觉画面描述（来自场景的 content）
   status: StoryboardStatus
   isGeneratingAudio: boolean
+  projectId: string | null  // 所属项目 ID
+  scriptId?: string | null // 关联的剧本 ID，用于幂等性判断
 }
 
 // 模拟场景数据
@@ -142,24 +160,173 @@ const mockScenes = [
 
 // 艺术风格类型
 const artStyles = [
+  { id: 'realistic-film', name: '写实电影', color: 'bg-slate-100 text-slate-700 border-slate-300' },
+  { id: 'vintage-film', name: '复古胶片', color: 'bg-amber-100 text-amber-700 border-amber-300' },
   { id: '3d-clay', name: '3D 粘土', color: 'bg-orange-100 text-orange-700 border-orange-300' },
+  { id: 'chinese-ink', name: '中式水墨', color: 'bg-gray-100 text-gray-700 border-gray-300' },
+  { id: 'pixar-3d', name: '皮克斯 3D', color: 'bg-blue-100 text-blue-700 border-blue-300' },
+  { id: 'ghibli-hand', name: '吉卜力手绘', color: 'bg-green-100 text-green-700 border-green-300' },
+  { id: 'pixel-art', name: '像素艺术', color: 'bg-indigo-100 text-indigo-700 border-indigo-300' },
   { id: 'cyberpunk', name: '赛博朋克', color: 'bg-purple-100 text-purple-700 border-purple-300' },
-  { id: 'ink-wash', name: '水墨风', color: 'bg-gray-100 text-gray-700 border-gray-300' },
-  { id: 'pixar', name: '皮克斯', color: 'bg-blue-100 text-blue-700 border-blue-300' },
-  { id: 'ghibli', name: '吉卜力', color: 'bg-green-100 text-green-700 border-green-300' },
 ]
 
 // 文化背景类型
 const culturalBackgrounds = [
+  { id: 'steampunk', name: '蒸汽朋克', color: 'bg-amber-100 text-amber-700 border-amber-300' },
+  { id: 'modern-city', name: '现代都市', color: 'bg-blue-100 text-blue-700 border-blue-300' },
+  { id: 'western-frontier', name: '西域边塞', color: 'bg-yellow-100 text-yellow-700 border-yellow-300' },
+  { id: 'future-world', name: '未来世界', color: 'bg-purple-100 text-purple-700 border-purple-300' },
+  { id: 'virtual-space', name: '虚拟空间', color: 'bg-cyan-100 text-cyan-700 border-cyan-300' },
   { id: 'chinese-ancient', name: '中式古装', color: 'bg-red-100 text-red-700 border-red-300' },
   { id: 'chinese-modern', name: '中式现代', color: 'bg-rose-100 text-rose-700 border-rose-300' },
   { id: 'japanese', name: '日本文化', color: 'bg-pink-100 text-pink-700 border-pink-300' },
-  { id: 'nordic', name: '极简北欧', color: 'bg-cyan-100 text-cyan-700 border-cyan-300' },
+  { id: 'nordic', name: '极简北欧', color: 'bg-teal-100 text-teal-700 border-teal-300' },
 ]
 
 export default function App() {
+  // 定义挂载状态：水合保护
+  const [mounted, setMounted] = useState(false)
+
+  // 副作用追踪：组件挂载后设置为 true
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  // 从 Zustand Store 获取资产数据 - 必须在所有 useEffect 之前定义
+  const allCharacters = useAssetStore((state) => state.characters)
+  const allProps = useAssetStore((state) => state.props)
+  const allScenes = useAssetStore((state) => state.scenes)
+  const storeTheme = useAssetStore((state) => state.theme)
+  
+  // 从项目 Store 获取数据
+  // 注意：projects 是原始数组，未经过过滤，用于下拉菜单显示所有项目
+  // 直接从 useProjectStore 获取，确保是全量数据
+  const projects = useProjectStore((state) => state.projects)
+  const currentProjectId = useProjectStore((state) => state.currentProjectId)
+  
+  // 跟踪 store 是否已完成 hydration（从 localStorage 加载数据）
+  const [storeHydrated, setStoreHydrated] = useState(false)
+  
+  // 检查 store 是否已完成 hydration（从 localStorage 加载数据）
+  useEffect(() => {
+    if (!mounted || typeof window === 'undefined') return
+    
+    // 检查 store 是否已完成 hydration
+    const checkStoreHydration = () => {
+      try {
+        // 直接从 store 获取数据
+        const storeProjects = useProjectStore.getState().projects
+        
+        // 检查 localStorage 中是否有项目数据
+        const stored = localStorage.getItem('ai-video-platform-projects')
+        
+        console.log('🔍 [Store Hydration] 检查中...')
+        console.log('  - Store 项目数量:', storeProjects.length)
+        console.log('  - localStorage 存在:', !!stored)
+        
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored)
+            const storedProjects = parsed?.state?.projects || []
+            
+            console.log('  - localStorage 项目数量:', storedProjects.length)
+            
+            // 如果 store 中有数据或 localStorage 中有数据，认为已 hydration
+            if (storeProjects.length > 0 || storedProjects.length > 0) {
+              setStoreHydrated(true)
+              console.log('✅ [Store Hydration] 完成 - 有项目数据')
+              console.log('  - Store 项目列表:', storeProjects.map(p => p.name))
+            } else {
+              // 即使都是空数组，也认为已 hydration（空数组也是有效状态）
+              setStoreHydrated(true)
+              console.log('✅ [Store Hydration] 完成 - 无项目数据（空数组）')
+            }
+          } catch (parseError) {
+            console.error('❌ [Store Hydration] 解析 localStorage 数据失败:', parseError)
+            // 即使解析失败，如果 store 中有数据，也认为已 hydration
+            if (storeProjects.length > 0) {
+              setStoreHydrated(true)
+              console.log('✅ [Store Hydration] 完成 - 使用 Store 数据')
+            } else {
+              // 如果 store 也没有数据，延迟设置 hydration
+              setTimeout(() => setStoreHydrated(true), 100)
+            }
+          }
+        } else {
+          // 即使没有存储数据，也认为已 hydration（空数组也是有效状态）
+          setStoreHydrated(true)
+          console.log('✅ [Store Hydration] 完成 - 无 localStorage 数据')
+        }
+      } catch (error) {
+        console.error('❌ [Store Hydration] 检查失败:', error)
+        // 出错时也尝试设置已 hydration，避免阻塞
+        setStoreHydrated(true)
+      }
+    }
+    
+    // 立即检查一次
+    checkStoreHydration()
+    
+    // 延迟再检查一次，确保 Zustand persist 有时间完成 hydration
+    const timer1 = setTimeout(checkStoreHydration, 100)
+    const timer2 = setTimeout(checkStoreHydration, 300)
+    
+    return () => {
+      clearTimeout(timer1)
+      clearTimeout(timer2)
+    }
+  }, [mounted])
+  
+  // 调试：监听 projects 变化，确保数据正确加载
+  useEffect(() => {
+    if (mounted && storeHydrated) {
+      const storeProjects = useProjectStore.getState().projects
+      console.log('🔍 [项目下拉菜单] 当前所有项目 (从 store 直接获取):', storeProjects)
+      console.log('🔍 [项目下拉菜单] 项目数量:', storeProjects.length)
+      console.log('🔍 [项目下拉菜单] 当前项目 ID:', currentProjectId)
+      console.log('🔍 [项目下拉菜单] 项目列表详情:', storeProjects.map(p => ({ id: p.id, name: p.name })))
+      console.log('🔍 [项目下拉菜单] projects 变量长度:', projects.length)
+      console.log('🔍 [项目下拉菜单] 数据一致性:', projects.length === storeProjects.length ? '✓ 一致' : '⚠️ 不一致')
+    }
+  }, [projects, currentProjectId, mounted, storeHydrated])
+  
+  // 过滤当前项目的资产数据 - 使用 useMemo 稳定资产引用，避免无限更新
+  const storeCharacters = React.useMemo(() => 
+    allCharacters.filter(char => char.projectId === currentProjectId), 
+    [allCharacters, currentProjectId]
+  )
+
+  const storeProps = React.useMemo(() => 
+    allProps.filter(prop => prop.projectId === currentProjectId), 
+    [allProps, currentProjectId]
+  )
+
+  const storeScenes = React.useMemo(() => 
+    allScenes.filter(scene => scene.projectId === currentProjectId), 
+    [allScenes, currentProjectId]
+  )
+  const updateCharacter = useAssetStore((state) => state.updateCharacter)
+  const updateProp = useAssetStore((state) => state.updateProp)
+  const updateScene = useAssetStore((state) => state.updateScene)
+  const setTheme = useAssetStore((state) => state.setTheme)
+  const removeCharacter = useAssetStore((state) => state.removeCharacter)
+  const removeProp = useAssetStore((state) => state.removeProp)
+  const removeScene = useAssetStore((state) => state.removeScene)
+  
+  const addProject = useProjectStore((state) => state.addProject)
+  const setCurrentProject = useProjectStore((state) => state.setCurrentProject)
+  const removeProject = useProjectStore((state) => state.removeProject)
+  const getCurrentProject = useProjectStore((state) => state.getCurrentProject)
+  
   const [currentStep, setCurrentStep] = useState('overview')
   const [isModalOpen, setIsModalOpen] = useState(false)
+  
+  // 项目选择器状态
+  const [isProjectSelectorOpen, setIsProjectSelectorOpen] = useState(false)
+  const [isCreatingProject, setIsCreatingProject] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('')
+  const [newProjectArtStyle, setNewProjectArtStyle] = useState('')
+  const [newProjectCulturalBg, setNewProjectCulturalBg] = useState('')
   
   // 背景设置状态
   const [selectedArtStyle, setSelectedArtStyle] = useState<string | null>(null)
@@ -229,6 +396,7 @@ export default function App() {
               visualDescription: char.description || '',
               referenceImageUrl: null,
               createdAt: new Date(),
+              projectId: currentProjectId,
             })
           })
         }
@@ -243,6 +411,7 @@ export default function App() {
               visualDescription: prop.description || (prop.visualDetails || ''),
               referenceImageUrl: null,
               createdAt: new Date(),
+              projectId: currentProjectId,
             })
           })
         }
@@ -257,6 +426,7 @@ export default function App() {
               visualDescription: scene.description || '',
               referenceImageUrl: null,
               createdAt: new Date(),
+              projectId: currentProjectId,
             })
           })
         }
@@ -272,6 +442,7 @@ export default function App() {
               id: `theme-${Date.now()}`,
               category: AssetCategory.THEME,
               name: themeValue,
+              projectId: currentProjectId,
               visualDescription: typeof adaptation.assets.theme === 'object' 
                 ? `${adaptation.assets.theme.visual_style} - ${adaptation.assets.theme.color_palette || ''}`
                 : themeValue,
@@ -318,6 +489,305 @@ export default function App() {
   const router = useRouter()
 
   // 确认改编并生成剧本
+  /**
+   * 同步提取的资产到资产中心
+   * @param extractedAssets - 从 API 返回的 extracted_assets 对象
+   */
+  const syncExtractedAssets = (extractedAssets: any) => {
+    if (!extractedAssets) return
+    
+    const store = useAssetStore.getState()
+    const assetsToSync: Asset[] = []
+    const newAssetIds: string[] = [] // 记录新生成的资产 ID
+    
+    // 转换角色 - 增量更新：只追加新角色，不覆盖现有角色
+    if (extractedAssets.characters && Array.isArray(extractedAssets.characters)) {
+      extractedAssets.characters.forEach((char: any) => {
+        if (char.name && char.description) {
+          // 检查是否已存在同名角色
+          const existingChar = storeCharacters.find(c => c.name.toLowerCase().trim() === char.name.toLowerCase().trim())
+          
+          if (!existingChar) {
+            // 如果不存在，生成唯一 ID 并添加新角色（增量追加，不覆盖现有角色）
+            // 确保 ID 格式统一：char_ + 时间戳 + 随机字符串
+            const characterId = char.id || (typeof crypto !== 'undefined' && crypto.randomUUID 
+              ? `char_${crypto.randomUUID().replace(/-/g, '')}` 
+              : `char_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`)
+            
+            // 添加到统一的 assets 数组
+            assetsToSync.push({
+              id: characterId,
+              category: AssetCategory.CHARACTER,
+              name: char.name,
+              visualDescription: char.description,
+              createdAt: new Date(),
+              projectId: currentProjectId,
+            })
+            
+            // 添加到独立的 characters 数组（增量追加）
+            // 使用 addCharacter 方法添加角色（它会自动生成 ID）
+            store.addCharacter({
+              name: char.name,
+              description: char.description
+            })
+            
+            // 获取刚添加的角色，使用它的实际 ID（Store 生成的）
+            // 注意：虽然我们生成了 characterId，但 Store 的 addCharacter 会生成自己的 ID
+            // 为了保持一致性，我们使用 Store 生成的 ID 并更新 assetsToSync
+            const updatedCharacters = store.characters
+            const addedChar = updatedCharacters.filter(c => c.name === char.name).pop()
+            if (addedChar) {
+              // 使用 Store 实际生成的 ID
+              newAssetIds.push(addedChar.id)
+              // 更新 assetsToSync 中的 ID 以保持一致
+              const assetIndex = assetsToSync.findIndex(a => a.name === char.name && a.category === AssetCategory.CHARACTER)
+              if (assetIndex !== -1) {
+                assetsToSync[assetIndex].id = addedChar.id
+              }
+            } else {
+              newAssetIds.push(characterId)
+            }
+          }
+          // 如果已存在同名角色，跳过（不覆盖用户手动创建的角色）
+        }
+      })
+    }
+    
+    // 转换场景 - 增量更新
+    if (extractedAssets.scenes && Array.isArray(extractedAssets.scenes)) {
+      extractedAssets.scenes.forEach((scene: any) => {
+        if (scene.name && scene.description) {
+          const existingScene = storeScenes.find(s => s.name.toLowerCase().trim() === scene.name.toLowerCase().trim())
+          
+          if (!existingScene) {
+            const sceneId = scene.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `scene-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`)
+            
+            assetsToSync.push({
+              id: sceneId,
+              category: AssetCategory.SCENE,
+              name: scene.name,
+              visualDescription: scene.description,
+              createdAt: new Date(),
+              projectId: currentProjectId,
+            })
+            
+            store.addScene({
+              name: scene.name,
+              description: scene.description
+            })
+            
+            // 获取刚添加的场景，使用它的实际 ID
+            const updatedScenes = store.scenes
+            const addedScene = updatedScenes.filter(s => s.name === scene.name).pop()
+            if (addedScene) {
+              newAssetIds.push(addedScene.id)
+              const assetIndex = assetsToSync.findIndex(a => a.name === scene.name && a.category === AssetCategory.SCENE)
+              if (assetIndex !== -1) {
+                assetsToSync[assetIndex].id = addedScene.id
+              }
+            } else {
+              newAssetIds.push(sceneId)
+            }
+          }
+        }
+      })
+    }
+    
+    // 转换道具 - 增量更新
+    if (extractedAssets.props && Array.isArray(extractedAssets.props)) {
+      extractedAssets.props.forEach((prop: any) => {
+        if (prop.name && prop.description) {
+          const existingProp = storeProps.find(p => p.name.toLowerCase().trim() === prop.name.toLowerCase().trim())
+          
+          if (!existingProp) {
+            const propId = prop.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `prop-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`)
+            
+            assetsToSync.push({
+              id: propId,
+              category: AssetCategory.PROP,
+              name: prop.name,
+              visualDescription: prop.description,
+              createdAt: new Date(),
+              projectId: currentProjectId,
+            })
+            
+            store.addProp({
+              name: prop.name,
+              visualDetails: prop.description
+            })
+            
+            // 获取刚添加的道具，使用它的实际 ID
+            const updatedProps = store.props
+            const addedProp = updatedProps.filter(p => p.name === prop.name).pop()
+            if (addedProp) {
+              newAssetIds.push(addedProp.id)
+              const assetIndex = assetsToSync.findIndex(a => a.name === prop.name && a.category === AssetCategory.PROP)
+              if (assetIndex !== -1) {
+                assetsToSync[assetIndex].id = addedProp.id
+              }
+            } else {
+              newAssetIds.push(propId)
+            }
+          }
+        }
+      })
+    }
+    
+    // 同步资产到统一的 assets 数组
+    if (assetsToSync.length > 0) {
+      store.syncAssets(assetsToSync)
+      
+      // 更新新生成资产的 ID 集合（用于在下拉列表中显示标记）
+      setAutoGeneratedAssetIds(prev => {
+        const newSet = new Set(prev)
+        newAssetIds.forEach(id => newSet.add(id))
+        return newSet
+      })
+      
+      const characterCount = assetsToSync.filter(a => a.category === AssetCategory.CHARACTER).length
+      const sceneCount = assetsToSync.filter(a => a.category === AssetCategory.SCENE).length
+      const propCount = assetsToSync.filter(a => a.category === AssetCategory.PROP).length
+      
+      // 显示 Apple 风格通知
+      const parts: string[] = []
+      if (characterCount > 0) parts.push(`${characterCount} 个角色`)
+      if (sceneCount > 0) parts.push(`${sceneCount} 个场景`)
+      if (propCount > 0) parts.push(`${propCount} 个道具`)
+      
+      if (parts.length > 0) {
+        setToastMessage(`已自动识别并更新资产中心：${parts.join('，')}`)
+        setToastVisible(true)
+        setTimeout(() => {
+          setToastVisible(false)
+          setTimeout(() => setToastMessage(null), 300)
+        }, 3000)
+      }
+    }
+  }
+
+  /**
+   * 剧本与分镜的深度自动化同步
+   * 将剧本中的所有场景自动转换为分镜卡片，并智能绑定角色
+   * @param script - 要同步的剧本对象
+   */
+  const syncToStoryboard = (script: Script) => {
+    if (!script || !script.scenes || script.scenes.length === 0) {
+      console.warn('[syncToStoryboard] 剧本为空或没有场景，跳过同步')
+      return
+    }
+
+    if (!currentProjectId) {
+      console.warn('[syncToStoryboard] 当前项目 ID 为空，跳过同步')
+      return
+    }
+
+    try {
+      // 1. 从 store 获取最新的角色列表（确保使用同步资产后的最新数据）
+      const store = useAssetStore.getState()
+      const latestCharacters = store.characters.filter(char => char.projectId === currentProjectId)
+      
+      console.log(`[syncToStoryboard] 开始同步剧本 "${script.title}"，共 ${script.scenes.length} 个场景`)
+      console.log(`[syncToStoryboard] 当前项目角色数量: ${latestCharacters.length}`)
+
+      // 2. 根据角色名称匹配角色 ID 的辅助函数（三级匹配策略）
+      const matchCharacterIdsByName = (characterNames: string[]): string[] => {
+        if (!characterNames || characterNames.length === 0) return []
+        
+        const matchedIds: string[] = []
+        characterNames.forEach(name => {
+          // 第一级：精确匹配
+          const exactMatch = latestCharacters.find(char => char.name === name)
+          if (exactMatch) {
+            matchedIds.push(exactMatch.id)
+            return
+          }
+          
+          // 第二级：模糊匹配（忽略大小写和空格）
+          const fuzzyMatch = latestCharacters.find(char => 
+            char.name.toLowerCase().trim() === name.toLowerCase().trim()
+          )
+          if (fuzzyMatch) {
+            matchedIds.push(fuzzyMatch.id)
+            return
+          }
+          
+          // 第三级：宽松匹配（包含关系）
+          const looseMatch = latestCharacters.find(char => 
+            char.name.toLowerCase().includes(name.toLowerCase()) ||
+            name.toLowerCase().includes(char.name.toLowerCase())
+          )
+          if (looseMatch) {
+            matchedIds.push(looseMatch.id)
+          }
+        })
+        
+        // 去重
+        return Array.from(new Set(matchedIds))
+      }
+
+      // 3. 数据映射：遍历剧本中的所有 scenes，转换为 StoryboardItem
+      const newStoryboards: StoryboardItem[] = script.scenes.map((scene, index) => {
+        // 3.1 智能绑定：遍历每个场景中出现的角色名称，自动查找匹配的 ID
+        const characterIds = scene.characters && Array.isArray(scene.characters) && scene.characters.length > 0
+          ? matchCharacterIdsByName(scene.characters)
+          : []
+        
+        if (characterIds.length > 0) {
+          console.log(`[syncToStoryboard] 场景 ${index + 1} 匹配到 ${characterIds.length} 个角色:`, characterIds)
+        }
+
+        // 3.2 字段对齐：将 scene.content 映射为 visualDescription，将 scene.dialogue 映射为分镜的对白
+        // 强化数据写入：确保每个分镜对象都必须包含 projectId 和 scriptId
+        return {
+          id: `sb-${Date.now()}-${script.id}-${index}`,
+          characterIds: characterIds, // 自动匹配并填充角色 ID
+          sceneId: null,
+          dialogue: scene.dialogue || '', // 映射 scene.dialogue
+          visualDescription: scene.content || '', // 映射 scene.content 为 visualDescription
+          status: 'pending' as StoryboardStatus,
+          isGeneratingAudio: false,
+          projectId: currentProjectId, // 强化：必须包含 projectId
+          scriptId: script.id, // 强化：必须包含 scriptId，用于幂等性判断和数据关联
+        }
+      })
+
+      // 4. 状态清理：增量追加，不覆盖已有分镜
+      // 读取现有的分镜数据
+      const existingStoryboardsStr = localStorage.getItem('ai-video-platform-storyboards')
+      let existingStoryboards: StoryboardItem[] = []
+      
+      if (existingStoryboardsStr) {
+        try {
+          existingStoryboards = JSON.parse(existingStoryboardsStr)
+        } catch (parseError) {
+          console.error('[syncToStoryboard] 解析现有分镜数据失败:', parseError)
+          existingStoryboards = []
+        }
+      }
+
+      // 4.1 幂等性检查：如果该剧本的分镜已存在，跳过追加
+      const existingStoryboardsForScript = existingStoryboards.filter(
+        sb => sb.scriptId === script.id && sb.projectId === currentProjectId
+      )
+      
+      if (existingStoryboardsForScript.length > 0) {
+        console.log(`[syncToStoryboard] 剧本 "${script.title}" 的分镜已存在（${existingStoryboardsForScript.length} 个），跳过同步`)
+        return
+      }
+
+      // 4.2 增量追加：将新剧本的分镜追加到列表末尾
+      const updatedStoryboards = [...existingStoryboards, ...newStoryboards]
+      
+      // 保存到 localStorage
+      localStorage.setItem('ai-video-platform-storyboards', JSON.stringify(updatedStoryboards))
+      
+      console.log(`✅ [syncToStoryboard] 成功同步 ${newStoryboards.length} 个分镜项到项目 "${currentProjectId}"`)
+    } catch (error) {
+      console.error('[syncToStoryboard] 同步分镜失败:', error)
+      // 不阻止主流程，静默处理错误
+    }
+  }
+
   const handleConfirmAdaptationAndGenerate = async (retry = false) => {
     if (!storyAdaptation) {
       alert('请先完成故事改编')
@@ -339,6 +809,11 @@ export default function App() {
     }, 500)
 
     try {
+      // 获取当前项目的艺术风格和文化背景
+      const currentProject = getCurrentProject()
+      const artStyle = currentProject?.artStyle || ''
+      const culturalBackground = currentProject?.culturalBackground || ''
+      
       // 直接调用 API 生成剧本
       const response = await fetch('/api/generate-script', {
         method: 'POST',
@@ -347,6 +822,8 @@ export default function App() {
         },
         body: JSON.stringify({
           storyOutline: storyAdaptation,
+          artStyle,
+          culturalBackground,
         }),
       })
 
@@ -359,11 +836,15 @@ export default function App() {
       }
 
       const data = await response.json()
+      console.log('API 返回的原始资产数据:', data.extracted_assets)
       const generatedScenes: Scene[] = data.scenes || []
 
       if (generatedScenes.length === 0) {
         throw new Error('未生成任何场景，请重试')
       }
+
+      // 同步提取的资产到资产中心
+      syncExtractedAssets(data.extracted_assets)
 
       // 创建新剧本并添加到列表
       const newScript: Script = {
@@ -374,6 +855,7 @@ export default function App() {
         author: 'AI 生成',
         createdAt: new Date(),
         scenes: generatedScenes,
+        projectId: currentProjectId,
       }
 
       // 添加到剧本列表（确保数据透传）
@@ -395,6 +877,9 @@ export default function App() {
         }
         return updated
       })
+
+      // 增强 handleConfirmAdaptationAndGenerate：在剧本生成并成功调用 setScripts 之后，立即调用 syncToStoryboard
+      syncToStoryboard(newScript)
 
       // 选中新创建的剧本（确保数据透传）
       setSelectedScript(newScript)
@@ -428,18 +913,48 @@ export default function App() {
   // 资产中心相关状态
   const [assetTab, setAssetTab] = useState<'character' | 'prop' | 'scene' | 'settings'>('character')
   
-  // 从 Zustand Store 获取资产数据
-  const storeCharacters = useAssetStore((state) => state.characters)
-  const storeProps = useAssetStore((state) => state.props)
-  const storeScenes = useAssetStore((state) => state.scenes)
-  const storeTheme = useAssetStore((state) => state.theme)
-  const updateCharacter = useAssetStore((state) => state.updateCharacter)
-  const updateProp = useAssetStore((state) => state.updateProp)
-  const updateScene = useAssetStore((state) => state.updateScene)
-  const setTheme = useAssetStore((state) => state.setTheme)
-  const removeCharacter = useAssetStore((state) => state.removeCharacter)
-  const removeProp = useAssetStore((state) => state.removeProp)
-  const removeScene = useAssetStore((state) => state.removeScene)
+  // 侧边栏资产编辑面板状态
+  const [isAssetSidebarOpen, setIsAssetSidebarOpen] = useState(false)
+  const [sidebarAssetId, setSidebarAssetId] = useState<string | null>(null)
+  const [sidebarAssetType, setSidebarAssetType] = useState<'character' | 'prop' | 'scene' | null>(null)
+  
+  // 角色编辑状态（包括音色）
+  const [editingCharacterVoiceId, setEditingCharacterVoiceId] = useState<string>('gentle-female')
+  const [isPlayingCharacterVoice, setIsPlayingCharacterVoice] = useState(false)
+  
+  // 跟踪新生成的资产 ID（用于在下拉列表中显示标记）
+  const [autoGeneratedAssetIds, setAutoGeneratedAssetIds] = useState<Set<string>>(new Set())
+  
+  // 当侧边栏打开时，初始化编辑状态 - 优化版本，防止频繁触发 setState
+  useEffect(() => {
+    // 增加判断：只有在侧边栏打开且有明确 ID 时才执行初始化
+    if (isAssetSidebarOpen && sidebarAssetId && sidebarAssetType) {
+      let targetAsset = null
+      
+      if (sidebarAssetType === 'character') {
+        targetAsset = storeCharacters.find(c => c.id === sidebarAssetId)
+      } else if (sidebarAssetType === 'prop') {
+        targetAsset = storeProps.find(p => p.id === sidebarAssetId)
+      } else if (sidebarAssetType === 'scene') {
+        targetAsset = storeScenes.find(s => s.id === sidebarAssetId)
+      }
+
+      if (targetAsset) {
+        // 关键：只有当内容真正不同时才更新状态
+        setEditingName(prev => prev !== targetAsset.name ? targetAsset.name : prev)
+        const desc = sidebarAssetType === 'prop' 
+          ? (targetAsset as any).visualDetails 
+          : (targetAsset as any).description
+        setEditingDescription(prev => prev !== desc ? desc : prev)
+        
+        // 如果是角色，初始化音色选择（资产隔离：从角色的 voiceId 属性读取）
+        if (sidebarAssetType === 'character') {
+          const voiceId = (targetAsset as any).voiceId || 'shimmer' // 默认使用 shimmer
+          setEditingCharacterVoiceId(voiceId)
+        }
+      }
+    }
+  }, [isAssetSidebarOpen, sidebarAssetId, sidebarAssetType, storeCharacters, storeProps, storeScenes])
   
   /**
    * 从文本描述中提取资产名称
@@ -462,6 +977,493 @@ export default function App() {
     })
     
     return foundAssets
+  }
+
+  /**
+   * 计算资产在当前选中剧本中的引用次数
+   * @param assetName - 资产名称
+   * @param category - 资产类别
+   * @returns 引用次数
+   */
+  const getAssetReferenceCount = (assetName: string, category: AssetCategory): number => {
+    if (!selectedScript) return 0
+    
+    let count = 0
+    selectedScript.scenes.forEach(scene => {
+      const sceneText = `${scene.content} ${scene.dialogue}`.toLowerCase()
+      const assetNameLower = assetName.toLowerCase()
+      
+      // 计算资产名称在场景文本中出现的次数
+      const matches = sceneText.match(new RegExp(assetNameLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))
+      if (matches) {
+        count += matches.length
+      }
+    })
+    
+    return count
+  }
+
+  /**
+   * 获取资产的静态图 URL
+   * 如果没有 referenceImageUrl，则根据类别返回对应的占位图
+   * @param asset - 资产对象
+   * @returns 图片 URL
+   */
+  const getAssetImageUrl = (asset: { referenceImageUrl?: string | null; category: AssetCategory }): string | null => {
+    // 如果有参考图，优先使用
+    if (asset.referenceImageUrl) {
+      return asset.referenceImageUrl
+    }
+    
+    // 根据类别返回对应的静态占位图
+    switch (asset.category) {
+      case AssetCategory.CHARACTER:
+        return 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=1000'
+      case AssetCategory.SCENE:
+        return 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?q=80&w=1000'
+      case AssetCategory.PROP:
+        return 'https://images.unsplash.com/photo-1526170315870-35874f48d622?q=80&w=1000'
+      default:
+        return null
+    }
+  }
+
+  // 项目选择器点击外部关闭逻辑
+  const projectSelectorRef = useRef<HTMLDivElement>(null)
+  
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (projectSelectorRef.current && !projectSelectorRef.current.contains(event.target as Node)) {
+        setIsProjectSelectorOpen(false)
+      }
+    }
+    
+    if (isProjectSelectorOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [isProjectSelectorOpen])
+
+  // 项目切换动画状态
+  const [isProjectTransitioning, setIsProjectTransitioning] = useState(false)
+  const [transitionDirection, setTransitionDirection] = useState<'left' | 'right'>('right')
+  const prevProjectIdRef = useRef<string | null>(currentProjectId)
+
+  // 监听项目切换，重置状态并触发过渡动画（仅在 mounted 后执行，防止首屏闪烁）
+  useEffect(() => {
+    // 防止首屏闪烁：仅在 mounted 为 true 后执行
+    if (!mounted) return
+
+    // 如果是首次加载，不执行切换逻辑
+    if (prevProjectIdRef.current === null && currentProjectId === null) {
+      return
+    }
+
+    // 如果项目 ID 没有变化，不执行切换逻辑
+    if (prevProjectIdRef.current === currentProjectId) {
+      return
+    }
+
+    // 确定切换方向（用于动画）
+    const prevIndex = projects.findIndex(p => p.id === prevProjectIdRef.current)
+    const currentIndex = projects.findIndex(p => p.id === currentProjectId)
+    if (prevIndex !== -1 && currentIndex !== -1) {
+      setTransitionDirection(currentIndex > prevIndex ? 'right' : 'left')
+    }
+
+    // 过渡动画：触发切换动画
+    setIsProjectTransitioning(true)
+
+    // ========== 彻底清理工作区：实现"项目制"管理 ==========
+    
+    // 1. 故事改编相关状态
+    setStoryText('')
+    setIsAnalyzing(false)
+    setProgress(0)
+    setAnalysisResult(null)
+    setStoryAdaptation(null)
+
+    // 2. 剧本管理相关状态
+    setSelectedScript(null)
+    setScriptSearchQuery('')
+    setIsCreatingScript(false)
+    setNewScriptTitle('')
+    setNewScriptAuthor('')
+    setIsGeneratingScript(false)
+    setScriptGenerationError(null)
+    setScriptGenerationProgress(0)
+
+    // 3. AI 生成相关状态
+    setAiPrompt('')
+    setIsGenerating(false)
+    setRegeneratingSceneIndex(null)
+    setEditingSceneIndex(null)
+    setIsBatchGenerating(false)
+    setSceneGenerationProgress({})
+
+    // 4. 资产中心相关状态
+    setIsAssetSidebarOpen(false)
+    setSidebarAssetId(null)
+    setSidebarAssetType(null)
+    setEditingAssetId(null)
+    setEditingAssetType(null)
+    setEditingName('')
+    setEditingDescription('')
+    setGeneratingImageId(null)
+    setGeneratingImageProgress(0)
+    setAutoGeneratedAssetIds(new Set()) // 清空自动生成的资产 ID 集合
+
+    // 5. 背景设置状态
+    setSelectedArtStyle(null)
+    setSelectedCulturalBg(null)
+
+    // 6. UI 状态重置
+    setCurrentStep('overview') // 重置到项目概览页面
+    setIsProjectSelectorOpen(false) // 关闭项目选择器
+    setIsCreatingProject(false) // 关闭创建项目弹窗
+    setIsModalOpen(false) // 关闭所有模态框
+    setToastMessage(null) // 清空提示消息
+    setToastVisible(false) // 隐藏提示
+    setAssetTab('character') // 重置资产中心标签页到默认值
+
+    // 7. 创建项目表单状态（防止表单数据残留）
+    setNewProjectName('')
+    setNewProjectArtStyle('')
+    setNewProjectCulturalBg('')
+
+    // ========== 清理完成：工作区已彻底重置，新项目将从干净状态开始 ==========
+
+    // 延迟结束动画，让用户看到切换效果（300ms 后关闭过渡动画）
+    const timer = setTimeout(() => {
+      setIsProjectTransitioning(false)
+      prevProjectIdRef.current = currentProjectId
+    }, 300)
+
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [currentProjectId, projects, mounted])
+
+  /**
+   * 角色多选组件
+   * 支持多选、标签化展示、头像预览和平滑动画
+   */
+  const CharacterMultiSelect = ({ 
+    storyboardId, 
+    selectedIds, 
+    onSelectionChange 
+  }: { 
+    storyboardId: string
+    selectedIds: string[]
+    onSelectionChange: (ids: string[]) => void 
+  }) => {
+    const [isOpen, setIsOpen] = useState(false)
+    const dropdownRef = useRef<HTMLDivElement>(null)
+    
+    // 点击外部关闭下拉框
+    useEffect(() => {
+      const handleClickOutside = (event: MouseEvent) => {
+        if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+          setIsOpen(false)
+        }
+      }
+      
+      if (isOpen) {
+        document.addEventListener('mousedown', handleClickOutside)
+      }
+      
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside)
+      }
+    }, [isOpen])
+    
+    // 获取角色的头像 URL
+    const getCharacterAvatar = (characterId: string): string | null => {
+      const store = useAssetStore.getState()
+      const assets = store.getAssetsByCategory(AssetCategory.CHARACTER)
+      const asset = assets.find(a => a.id === characterId)
+      return asset ? getAssetImageUrl(asset) : null
+    }
+    
+    const toggleCharacter = (characterId: string) => {
+      if (selectedIds.includes(characterId)) {
+        onSelectionChange(selectedIds.filter(id => id !== characterId))
+      } else {
+        onSelectionChange([...selectedIds, characterId])
+      }
+    }
+    
+    const removeCharacter = (characterId: string) => {
+      onSelectionChange(selectedIds.filter(id => id !== characterId))
+    }
+    
+    return (
+      <div className="relative" ref={dropdownRef}>
+        {/* 下拉框触发器 */}
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className="w-full px-3 py-2 bg-slate-800/50 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-cyan-500/50 flex items-center justify-between hover:bg-slate-800/70 transition-colors"
+        >
+          <span className="text-gray-400">选择角色...</span>
+          <ChevronDown 
+            size={16} 
+            className={`text-gray-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+          />
+        </button>
+        
+        {/* 下拉菜单 */}
+        <AnimatePresence>
+          {isOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="absolute z-50 w-full mt-1 bg-slate-800 border border-white/10 rounded-lg shadow-xl max-h-60 overflow-y-auto"
+            >
+              {storeCharacters.length === 0 ? (
+                <div className="px-3 py-2 text-sm text-gray-400 text-center">暂无角色</div>
+              ) : (
+                storeCharacters.map(character => {
+                  const isSelected = selectedIds.includes(character.id)
+                  const isAutoGenerated = autoGeneratedAssetIds.has(character.id)
+                  const avatarUrl = getCharacterAvatar(character.id)
+                  
+                  return (
+                    <motion.button
+                      key={character.id}
+                      type="button"
+                      onClick={() => toggleCharacter(character.id)}
+                      className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 hover:bg-slate-700/50 transition-colors ${
+                        isSelected ? 'bg-cyan-500/20' : ''
+                      }`}
+                      whileHover={{ backgroundColor: 'rgba(51, 65, 85, 0.5)' }}
+                    >
+                      {/* 头像预览 */}
+                      <div className="w-6 h-6 rounded-full overflow-hidden bg-slate-700 flex-shrink-0">
+                        {avatarUrl ? (
+                          <img 
+                            src={avatarUrl} 
+                            alt={character.name}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <User size={14} className="w-full h-full text-gray-400 p-1" />
+                        )}
+                      </div>
+                      
+                      {/* 角色名称 */}
+                      <span className="flex-1 text-white">{character.name}</span>
+                      
+                      {/* 选中标记 */}
+                      {isSelected && (
+                        <CheckCircle size={14} className="text-cyan-400 flex-shrink-0" />
+                      )}
+                      
+                      {/* 自动生成标记 */}
+                      {isAutoGenerated && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 flex-shrink-0"></span>
+                      )}
+                    </motion.button>
+                  )
+                })
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        
+        {/* 已选中的角色标签 */}
+        {selectedIds.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            <AnimatePresence mode="popLayout">
+              {selectedIds.map(charId => {
+                const char = storeCharacters.find(c => c.id === charId)
+                if (!char) return null
+                const avatarUrl = getCharacterAvatar(charId)
+                
+                return (
+                  <motion.span
+                    key={charId}
+                    layout
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    transition={{ duration: 0.2 }}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-700 text-gray-200 rounded-full text-xs border border-slate-600 shadow-sm"
+                  >
+                    {/* 微型圆形头像 */}
+                    <div className="w-4 h-4 rounded-full overflow-hidden bg-slate-600 flex-shrink-0">
+                      {avatarUrl ? (
+                        <img 
+                          src={avatarUrl} 
+                          alt={char.name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <User size={10} className="w-full h-full text-gray-400 p-0.5" />
+                      )}
+                    </div>
+                    
+                    {/* 角色名称 */}
+                    <span className="font-medium">{char.name}</span>
+                    
+                    {/* 删除按钮 */}
+                    <button
+                      onClick={() => removeCharacter(charId)}
+                      className="ml-0.5 hover:bg-slate-600 rounded-full p-0.5 transition-colors flex-shrink-0"
+                      aria-label="移除角色"
+                    >
+                      <X size={10} className="text-gray-300 hover:text-red-400" />
+                    </button>
+                  </motion.span>
+                )
+              })}
+            </AnimatePresence>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  /**
+   * 渲染带资产标签的文本
+   * 识别文本中的资产名称，并将其渲染为可点击的标签
+   * @param text - 原始文本
+   * @returns React 元素数组
+   */
+  const renderTextWithAssetTags = (text: string): React.ReactNode[] => {
+    if (!text) return [<span key="empty" className="text-slate-500 italic">暂无描述</span>]
+    
+    const store = useAssetStore.getState()
+    const allAssets = [
+      ...store.getAssetsByCategory(AssetCategory.CHARACTER),
+      ...store.getAssetsByCategory(AssetCategory.PROP),
+      ...store.getAssetsByCategory(AssetCategory.SCENE),
+    ]
+    
+    // 按名称长度降序排序，优先匹配长名称
+    const sortedAssets = allAssets.sort((a, b) => b.name.length - a.name.length)
+    
+    const parts: React.ReactNode[] = []
+    let lastIndex = 0
+    let keyCounter = 0
+    
+    // 查找所有资产名称在文本中的位置
+    const matches: Array<{ asset: Asset; start: number; end: number }> = []
+    
+    sortedAssets.forEach(asset => {
+      const regex = new RegExp(asset.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+      let match: RegExpExecArray | null
+      while ((match = regex.exec(text)) !== null) {
+        // 检查是否与已有匹配重叠
+        const overlaps = matches.some(m => 
+          (match!.index! >= m.start && match!.index! < m.end) ||
+          (match!.index! + match![0].length > m.start && match!.index! + match![0].length <= m.end) ||
+          (match!.index! <= m.start && match!.index! + match![0].length >= m.end)
+        )
+        
+        if (!overlaps) {
+          matches.push({
+            asset,
+            start: match.index!,
+            end: match.index! + match[0].length
+          })
+        }
+      }
+    })
+    
+    // 按位置排序
+    matches.sort((a, b) => a.start - b.start)
+    
+    // 构建渲染结果
+    matches.forEach(match => {
+      // 添加匹配前的文本
+      if (match.start > lastIndex) {
+        parts.push(
+          <span key={`text-${keyCounter++}`}>
+            {text.substring(lastIndex, match.start)}
+          </span>
+        )
+      }
+      
+      // 添加资产标签
+      const assetCategory = match.asset.category
+      const tagColor = assetCategory === AssetCategory.CHARACTER 
+        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
+        : assetCategory === AssetCategory.SCENE
+        ? 'bg-green-500/20 text-green-300 border-green-500/50'
+        : 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+      
+      parts.push(
+        <span
+          key={`tag-${keyCounter++}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            // 根据资产类型找到对应的 ID
+            let assetId: string | null = null
+            if (assetCategory === AssetCategory.CHARACTER) {
+              const char = storeCharacters.find(c => c.name === match.asset.name)
+              assetId = char?.id || null
+            } else if (assetCategory === AssetCategory.PROP) {
+              const prop = storeProps.find(p => p.name === match.asset.name)
+              assetId = prop?.id || null
+            } else if (assetCategory === AssetCategory.SCENE) {
+              const scene = storeScenes.find(s => s.name === match.asset.name)
+              assetId = scene?.id || null
+            }
+            
+            if (assetId) {
+              // 初始化编辑状态
+              if (assetCategory === AssetCategory.CHARACTER) {
+                const char = storeCharacters.find(c => c.id === assetId)
+                if (char) {
+                  setEditingName(char.name)
+                  setEditingDescription(char.description)
+                }
+              } else if (assetCategory === AssetCategory.PROP) {
+                const prop = storeProps.find(p => p.id === assetId)
+                if (prop) {
+                  setEditingName(prop.name)
+                  setEditingDescription(prop.visualDetails)
+                }
+              } else if (assetCategory === AssetCategory.SCENE) {
+                const scene = storeScenes.find(s => s.id === assetId)
+                if (scene) {
+                  setEditingName(scene.name)
+                  setEditingDescription(scene.description)
+                }
+              }
+              
+              setSidebarAssetId(assetId)
+              setSidebarAssetType(assetCategory as 'character' | 'prop' | 'scene')
+              setIsAssetSidebarOpen(true)
+              setAssetTab(assetCategory as 'character' | 'prop' | 'scene' | 'settings')
+            }
+          }}
+          className={`inline-flex items-center px-2 py-1 rounded-md border cursor-pointer hover:opacity-80 transition-all ${tagColor}`}
+          title={`点击编辑 ${match.asset.name}`}
+        >
+          {match.asset.name}
+        </span>
+      )
+      
+      lastIndex = match.end
+    })
+    
+    // 添加剩余的文本
+    if (lastIndex < text.length) {
+      parts.push(
+        <span key={`text-${keyCounter++}`}>
+          {text.substring(lastIndex)}
+        </span>
+      )
+    }
+    
+    return parts.length > 0 ? parts : [<span key="text">{text}</span>]
   }
 
   /**
@@ -572,13 +1574,20 @@ export default function App() {
           })
 
           if (!createResponse.ok) {
+            // 如果接口返回非 200 状态，立即停止并显示错误
             const errorData = await createResponse.json().catch(() => ({}))
             console.error(`场景 ${scene.sceneNumber} 创建任务失败:`, errorData.error)
             setSceneGenerationProgress(prev => ({
               ...prev,
               [scene.sceneNumber]: -1 // -1 表示失败
             }))
-            continue // 跳过当前场景，继续下一个
+            // 显示错误提示
+            setToastMessage(`场景 ${scene.sceneNumber}: 提示词解析失败`)
+            setToastVisible(true)
+            setTimeout(() => {
+              setToastVisible(false)
+            }, 5000)
+            continue // 跳过当前场景，继续下一个（不进入后续轮询逻辑）
           }
 
           const createData = await createResponse.json()
@@ -740,8 +1749,9 @@ export default function App() {
       })
       
       if (!createResponse.ok) {
+        // 如果接口返回非 200 状态，立即停止并显示错误
         const errorData = await createResponse.json().catch(() => ({}))
-        throw new Error(errorData.error || '视觉引擎正在维护，请稍后再试')
+        throw new Error('提示词解析失败')
       }
       
       const createData = await createResponse.json()
@@ -880,7 +1890,8 @@ export default function App() {
               name: assetName,
               visualDescription: assetDescription,
               referenceImageUrl: imageUrl,
-              createdAt: new Date()
+              createdAt: new Date(),
+              projectId: currentProjectId,
             }])
           }
         }
@@ -957,153 +1968,6 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [toastVisible, setToastVisible] = useState(false)
 
-  // 分镜管理相关状态
-  const [storyboards, setStoryboards] = useState<StoryboardItem[]>([
-    {
-      id: 'sb-1',
-      characterId: null,
-      sceneId: null,
-      dialogue: '这里是第一段对白，点击可编辑...',
-      status: 'pending',
-      isGeneratingAudio: false
-    },
-    {
-      id: 'sb-2',
-      characterId: null,
-      sceneId: null,
-      dialogue: '这里是第二段对白，点击可编辑...',
-      status: 'pending',
-      isGeneratingAudio: false
-    },
-    {
-      id: 'sb-3',
-      characterId: null,
-      sceneId: null,
-      dialogue: '这里是第三段对白，点击可编辑...',
-      status: 'pending',
-      isGeneratingAudio: false
-    },
-    {
-      id: 'sb-4',
-      characterId: null,
-      sceneId: null,
-      dialogue: '这里是第四段对白，点击可编辑...',
-      status: 'pending',
-      isGeneratingAudio: false
-    },
-    {
-      id: 'sb-5',
-      characterId: null,
-      sceneId: null,
-      dialogue: '这里是第五段对白，点击可编辑...',
-      status: 'pending',
-      isGeneratingAudio: false
-    },
-    {
-      id: 'sb-6',
-      characterId: null,
-      sceneId: null,
-      dialogue: '这里是第六段对白，点击可编辑...',
-      status: 'pending',
-      isGeneratingAudio: false
-    },
-  ])
-  const [editingStoryboardId, setEditingStoryboardId] = useState<string | null>(null)
-  const [editingDialogue, setEditingDialogue] = useState('')
-  const [hasLoadedPendingData, setHasLoadedPendingData] = useState(false)
-  
-  // 全局风格设定（从 localStorage 加载）
-  const [globalStyle, setGlobalStyle] = useState<string>(() => {
-    if (typeof window === 'undefined') return ''
-    try {
-      return localStorage.getItem('storyboard_global_style') || ''
-    } catch {
-      return ''
-    }
-  })
-
-  // 保存全局风格到 localStorage
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    try {
-      if (globalStyle.trim()) {
-        localStorage.setItem('storyboard_global_style', globalStyle)
-      } else {
-        localStorage.removeItem('storyboard_global_style')
-      }
-    } catch {
-      // 静默处理错误
-    }
-  }, [globalStyle])
-
-  // 增强提示词函数：将剧本描述封装成更适合 AI 绘图的提示词
-  const enhancePrompt = (visualDesc: string): string => {
-    if (!visualDesc || visualDesc.trim() === '') {
-      return ''
-    }
-    
-    // 在原始描述后添加 AI 绘图增强词
-    const enhancements = [
-      'cinematic lighting',
-      'highly detailed',
-      '8k',
-      'shot on 35mm lens',
-      'professional photography',
-      'cinematic composition',
-    ]
-    
-    // 组合增强后的提示词
-    return `${visualDesc.trim()}, ${enhancements.join(', ')}`
-  }
-
-  // 从 localStorage 加载待处理的分镜数据
-  useEffect(() => {
-    // 只在分镜管理页面且未加载过数据时执行
-    if (currentStep !== 'storyboard' || hasLoadedPendingData) return
-
-    try {
-      const pendingData = localStorage.getItem('pending_storyboard_data')
-      if (!pendingData) return
-
-      const parsed = JSON.parse(pendingData)
-      if (!parsed.scenes || !Array.isArray(parsed.scenes) || parsed.scenes.length === 0) {
-        return
-      }
-
-      // 将场景数据转换为分镜卡片
-      const newStoryboards: StoryboardItem[] = parsed.scenes.map((scene: Scene, index: number) => ({
-        id: `sb-${Date.now()}-${index}`,
-        characterId: null,
-        sceneId: null,
-        dialogue: scene.dialogue || '',
-        visualDescription: scene.content || '',  // 视觉画面描述
-        status: 'pending' as StoryboardStatus,
-        isGeneratingAudio: false,
-      }))
-
-      // 更新分镜列表
-      setStoryboards(newStoryboards)
-
-      // 标记已加载，避免重复加载
-      setHasLoadedPendingData(true)
-
-      // 清除 localStorage 中的数据（可选，根据需求决定是否保留）
-      // localStorage.removeItem('pending_storyboard_data')
-    } catch (error) {
-      // 静默处理错误，不影响页面正常显示
-    }
-  }, [currentStep, hasLoadedPendingData])
-
-  // 当切换到分镜管理页面时，重置加载标记
-  useEffect(() => {
-    if (currentStep === 'storyboard') {
-      // 可以在这里决定是否重置标记，允许重新加载
-      // setHasLoadedPendingData(false)
-    } else {
-      // 离开分镜管理页面时重置标记
-      setHasLoadedPendingData(false)
-    }
-  }, [currentStep])
 
   // localStorage 键名
   const SCRIPTS_STORAGE_KEY = 'ai-video-platform-scripts'
@@ -1148,53 +2012,29 @@ export default function App() {
     }
   }
 
-  // 初始化剧本数据：优先从 localStorage 加载，如果没有则使用默认数据
-  const [scripts, setScripts] = useState<Script[]>(() => {
+  // 初始化剧本数据：优先从 localStorage 加载
+  const [allScripts, setAllScripts] = useState<Script[]>(() => {
     const loadedScripts = loadScriptsFromStorage()
-    if (loadedScripts.length > 0) {
-      return loadedScripts
-    }
-    // 如果没有本地数据，使用默认数据
-    return [
-      {
-        id: 'script-1',
-        title: '赛博剑客的觉醒',
-        author: 'AI Writer',
-        createdAt: new Date('2024-01-15T10:00:00Z'),
-        scenes: [
-          {
-            sceneNumber: 1,
-            content: '赛博剑客站在霓虹街头，雨水从空中落下，反射着五彩斑斓的霓虹灯光',
-            dialogue: '在这个数字化的世界里，每个人都在寻找自己的真相。',
-            vfx_suggestion: '推镜头，从远景逐渐推进到角色特写，配合雨滴特效',
-            duration: 5.0
-          },
-          {
-            sceneNumber: 2,
-            content: '地下实验室，多个屏幕闪烁着代码，AI 少女的投影出现',
-            dialogue: '你终于来了，我一直在等你。',
-            vfx_suggestion: '低头视角，从上方俯视，营造神秘感',
-            duration: 4.5
-          }
-        ]
-      },
-      {
-        id: 'script-2',
-        title: '未来都市传说',
-        author: 'Creative AI',
-        createdAt: new Date('2024-01-20T14:30:00Z'),
-        scenes: [
-          {
-            sceneNumber: 1,
-            content: '未来都市的空中走廊，悬浮车辆穿梭而过',
-            dialogue: '欢迎来到 2089 年，这里是新东京。',
-            vfx_suggestion: '环绕镜头，展示城市全貌',
-            duration: 6.0
-          }
-        ]
-      }
-    ]
+    return loadedScripts
   })
+  
+  // 过滤当前项目的剧本数据
+  const scripts = allScripts.filter(script => script.projectId === currentProjectId)
+  
+  
+  // 更新 scripts 的函数，同时更新 allScripts
+  const setScripts = (updater: Script[] | ((prev: Script[]) => Script[])) => {
+    if (typeof updater === 'function') {
+      setAllScripts(prev => {
+        const updated = updater(prev)
+        saveScriptsToStorage(updated)
+        return updated
+      })
+    } else {
+      setAllScripts(updater)
+      saveScriptsToStorage(updater)
+    }
+  }
   const [selectedScript, setSelectedScript] = useState<Script | null>(null)
   const [scriptSearchQuery, setScriptSearchQuery] = useState('')
   const [isCreatingScript, setIsCreatingScript] = useState(false)
@@ -1226,6 +2066,11 @@ export default function App() {
 
     setIsGenerating(true)
     try {
+      // 获取当前项目的艺术风格和文化背景
+      const currentProject = getCurrentProject()
+      const artStyle = currentProject?.artStyle || ''
+      const culturalBackground = currentProject?.culturalBackground || ''
+      
       const response = await fetch('/api/generate-script', {
         method: 'POST',
         headers: {
@@ -1233,6 +2078,8 @@ export default function App() {
         },
         body: JSON.stringify({
           prompt: aiPrompt.trim(),
+          artStyle,
+          culturalBackground,
         }),
       })
 
@@ -1242,11 +2089,15 @@ export default function App() {
       }
 
       const data = await response.json()
+      console.log('API 返回的原始资产数据:', data.extracted_assets)
       const generatedScenes: Scene[] = data.scenes || []
 
       if (generatedScenes.length === 0) {
         throw new Error('未生成任何场景，请重试')
       }
+
+      // 同步提取的资产到资产中心
+      syncExtractedAssets(data.extracted_assets)
 
       // 计算新的场景编号（从当前场景数量 + 1 开始）
       const startSceneNumber = selectedScript.scenes.length + 1
@@ -1287,6 +2138,11 @@ export default function App() {
 
     setRegeneratingSceneIndex(sceneIndex)
     try {
+      // 获取当前项目的艺术风格和文化背景
+      const currentProject = getCurrentProject()
+      const artStyle = currentProject?.artStyle || ''
+      const culturalBackground = currentProject?.culturalBackground || ''
+      
       // 使用当前场景的内容作为提示词
       const prompt = `场景描述：${scene.content}\n对白：${scene.dialogue}`
       
@@ -1298,6 +2154,8 @@ export default function App() {
         body: JSON.stringify({
           prompt: prompt,
           singleScene: true, // 只生成单个场景
+          artStyle,
+          culturalBackground,
         }),
       })
 
@@ -1307,11 +2165,15 @@ export default function App() {
       }
 
       const data = await response.json()
+      console.log('API 返回的原始资产数据:', data.extracted_assets)
       const generatedScenes: Scene[] = data.scenes || []
 
       if (generatedScenes.length === 0) {
         throw new Error('未生成任何场景，请重试')
       }
+
+      // 同步提取的资产到资产中心
+      syncExtractedAssets(data.extracted_assets)
 
       // 使用生成的第一个场景替换当前场景（保持场景编号不变）
       const newScene = generatedScenes[0]
@@ -1392,151 +2254,65 @@ export default function App() {
     }
   }, [])
 
-  // TTS 试听函数 - 使用 Web Speech API
-  const handlePlayTTS = () => {
+  // TTS 试听函数 - 使用 OpenAI TTS API
+  const handlePlayTTS = async () => {
     if (!selectedCharacter) return
 
-    // 检查浏览器是否支持 Web Speech API
-    if (!window.speechSynthesis) {
-      console.warn('Web Speech API not supported, falling back to HTML5 Audio')
-      fallbackToAudio()
-      return
-    }
-
-    // 停止当前播放
-    window.speechSynthesis.cancel()
-
     setIsPlayingAudio(true)
 
-    // 创建语音合成对象
-    const utterance = new SpeechSynthesisUtterance()
-    
-    // 设置要朗读的文本（可以根据角色名称生成示例文本）
-    const sampleText = `你好，我是${selectedCharacter.name}，这是一段语音试听示例。当前语速为${editingSpeed}%，情感强度为${editingEmotion}%。`
-    utterance.text = sampleText
-    
-    // 设置语速（0.1 到 10，默认 1）
-    // 将 0-100 的滑块值转换为 0.5-2.0 的语速范围
-    utterance.rate = 0.5 + (editingSpeed / 100) * 1.5
-    
-    // 设置音调（0 到 2，默认 1）
-    // 将 0-100 的情感强度转换为 0.8-1.5 的音调范围
-    utterance.pitch = 0.8 + (editingEmotion / 100) * 0.7
-    
-    // 设置音量（0 到 1，默认 1）
-    utterance.volume = 1
-    
-    // 设置语言
-    utterance.lang = 'zh-CN'
-    
-    // 获取可用语音列表
-    const getVoices = () => {
-      return window.speechSynthesis.getVoices()
-    }
-    
-    // 选择合适语音的函数
-    const selectVoice = (utt: SpeechSynthesisUtterance, voiceList: SpeechSynthesisVoice[]) => {
-      let selectedVoice: SpeechSynthesisVoice | undefined = undefined
+    try {
+      // 生成示例文本
+      const sampleText = `你好，我是${selectedCharacter.name}，这是一段语音试听示例。当前语速为${editingSpeed}%，情感强度为${editingEmotion}%。`
       
-      if (editingVoiceModel === 'deep') {
-        // 寻找低沉的男声
-        selectedVoice = voiceList.find(v => 
-          v.lang.includes('zh') && (
-            v.name.includes('Male') || 
-            v.name.includes('男') || 
-            v.name.toLowerCase().includes('deep') ||
-            v.name.toLowerCase().includes('male') ||
-            v.name.toLowerCase().includes('zh-cn-male')
-          )
-        ) || voiceList.find(v => v.lang.includes('zh-CN') && v.name.toLowerCase().includes('male'))
-      } else if (editingVoiceModel === 'sweet') {
-        // 寻找甜美的女声
-        selectedVoice = voiceList.find(v => 
-          v.lang.includes('zh') && (
-            v.name.includes('Female') || 
-            v.name.includes('女') || 
-            v.name.toLowerCase().includes('sweet') ||
-            v.name.toLowerCase().includes('female') ||
-            v.name.toLowerCase().includes('zh-cn-female')
-          )
-        ) || voiceList.find(v => v.lang.includes('zh-CN') && v.name.toLowerCase().includes('female'))
-      } else if (editingVoiceModel === 'mechanical') {
-        // 寻找机械感的声音
-        selectedVoice = voiceList.find(v => 
-          v.lang.includes('zh') && (
-            v.name.toLowerCase().includes('robot') || 
-            v.name.toLowerCase().includes('mechanical') ||
-            v.name.toLowerCase().includes('synthetic')
-          )
-        )
-      }
-      
-      // 如果没有找到特定语音，使用默认中文语音
-      if (!selectedVoice) {
-        selectedVoice = voiceList.find(v => v.lang.includes('zh-CN')) || 
-                       voiceList.find(v => v.lang.includes('zh'))
-      }
-      
-      if (selectedVoice) {
-        utt.voice = selectedVoice
-      }
-    }
-    
-    let voices = getVoices()
-    
-    // 如果语音列表为空，等待加载
-    if (voices.length === 0) {
-      window.speechSynthesis.onvoiceschanged = () => {
-        voices = getVoices()
-        if (voices.length > 0) {
-          selectVoice(utterance, voices)
-          window.speechSynthesis.speak(utterance)
-        }
-      }
-    } else {
-      selectVoice(utterance, voices)
-      window.speechSynthesis.speak(utterance)
-    }
-    
-    // 播放完成和错误处理
-    utterance.onend = () => {
-      setIsPlayingAudio(false)
-    }
-    
-    utterance.onerror = (event) => {
-      console.error('Speech synthesis error:', event)
-      setIsPlayingAudio(false)
-      // 如果 Web Speech API 失败，尝试使用 HTML5 Audio 作为备选
-      fallbackToAudio()
-    }
-  }
+      // 映射音色 ID：editingVoiceModel 已经是 voicePresets 中的 id
+      // 'cold-male' → onyx, 'gentle-female' → shimmer, 'ai-mechanical' → alloy
+      // 如果 editingVoiceModel 不在预设中，使用默认值
+      const voiceId = editingVoiceModel || 'gentle-female'
 
-  // 备选方案：使用 HTML5 Audio 播放远程 MP3
-  const fallbackToAudio = () => {
-    setIsPlayingAudio(true)
-    
-    // 使用一个公开的示例音频 URL（可以替换为实际的 TTS 服务 URL）
-    // 注意：这是一个示例 URL，实际使用时应该替换为真实的 TTS 服务端点
-    const audioUrl = 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'
-    
-    const audio = new Audio(audioUrl)
-    audio.volume = 0.7
-    
-    audio.onended = () => {
+      // 调用 TTS API
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: sampleText,
+          voiceId: voiceId,
+          model: 'tts-1', // 使用 tts-1 模型（快速）
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || 'TTS 生成失败')
+      }
+
+      // 获取音频流
+      const audioBlob = await response.blob()
+      const audioUrl = URL.createObjectURL(audioBlob)
+      
+      // 创建 Audio 对象并播放
+      const audio = new Audio(audioUrl)
+      audio.volume = 1
+      
+      audio.onended = () => {
+        setIsPlayingAudio(false)
+        URL.revokeObjectURL(audioUrl) // 清理 URL
+      }
+      
+      audio.onerror = () => {
+        console.error('Audio playback error')
+        setIsPlayingAudio(false)
+        URL.revokeObjectURL(audioUrl)
+        alert('音频播放失败，请检查网络连接或浏览器支持')
+      }
+      
+      await audio.play()
+    } catch (error: any) {
+      console.error('TTS 生成失败:', error)
       setIsPlayingAudio(false)
+      alert(error.message || 'TTS 生成失败，请检查 API 配置')
     }
-    
-    audio.onerror = () => {
-      console.error('Audio playback error')
-      setIsPlayingAudio(false)
-      alert('音频播放失败，请检查网络连接或浏览器支持')
-    }
-    
-    audio.play().catch(error => {
-      console.error('Audio play error:', error)
-      setIsPlayingAudio(false)
-      alert('无法播放音频，请检查浏览器权限设置')
-    })
   }
 
   // AI 深度解析函数
@@ -1593,159 +2369,658 @@ export default function App() {
       setAnalysisResult(mockResult)
       setIsAnalyzing(false)
       
-      // 将解析出的角色添加到资产中心
-      const newCharacters: CharacterAsset[] = mockResult.coreAssets.characters.map((charName, index) => {
+      // 将解析出的角色添加到资产中心（使用 Zustand store）
+      const store = useAssetStore.getState()
+      const currentChars = store.characters.filter(char => char.projectId === currentProjectId)
+      mockResult.coreAssets.characters.forEach((charName: string) => {
         // 检查是否已存在同名角色
-        const existingChar = assets.find(a => a.name === charName)
-        if (existingChar) {
-          return existingChar
+        const existingChar = currentChars.find(c => c.name === charName)
+        if (!existingChar) {
+          // 如果不存在，添加到 store
+          store.addCharacter({
+            name: charName,
+            description: `A detailed character design for ${charName}, high quality, professional`
+          })
         }
-        
-        // 创建新角色
-        return {
-          id: `new-${Date.now()}-${index}`,
-          name: charName,
-          prompt: `A detailed character design for ${charName}, high quality, professional`,
-          voiceModel: 'cold-male', // 默认音色
-          speed: 50,
-          emotion: 70,
-          status: 'pending' // 新解析的角色默认为待更新状态
-        }
-      })
-      
-      // 合并新角色到现有资产列表（去重）
-      setAssets(prevAssets => {
-        const existingNames = new Set(prevAssets.map(a => a.name))
-        const uniqueNewChars = newCharacters.filter(char => !existingNames.has(char.name))
-        return [...prevAssets, ...uniqueNewChars]
       })
     }, 3000)
   }
 
+  // 获取当前项目信息
+  const currentProject = getCurrentProject()
+  
+  // 获取每个项目的第一张分镜图（从 localStorage 读取）
+  const getProjectFirstStoryboardImage = (projectId: string | null): string | null => {
+    if (!projectId || typeof window === 'undefined') return null
+    try {
+      // 从 localStorage 读取分镜数据
+      const stored = localStorage.getItem('ai-video-platform-storyboards')
+      if (!stored) return null
+      
+      const storyboards: StoryboardItem[] = JSON.parse(stored)
+      const projectStoryboards = storyboards.filter(sb => sb.projectId === projectId)
+      const firstStoryboard = projectStoryboards.find(sb => sb.imageUrl)
+      return firstStoryboard?.imageUrl || null
+    } catch {
+      return null
+    }
+  }
+  
+  // 获取项目的分镜数量（从 localStorage 读取）
+  const getProjectStoryboardCount = (projectId: string | null): number => {
+    if (!projectId || typeof window === 'undefined') return 0
+    try {
+      const stored = localStorage.getItem('ai-video-platform-storyboards')
+      if (!stored) return 0
+      
+      const storyboards: StoryboardItem[] = JSON.parse(stored)
+      return storyboards.filter(sb => sb.projectId === projectId).length
+    } catch {
+      return 0
+    }
+  }
+
   return (
-    <div className="flex h-screen bg-[#F5F5F7] text-[#1D1D1F] overflow-hidden">
-      {/* 侧边栏导航 - Apple 风格 */}
-      <aside className="w-64 border-r border-[#E5E5E7] backdrop-blur-xl bg-[#FFFFFF] flex flex-col p-4 space-y-2 shadow-apple">
-        <div className="text-xl font-bold mb-8 px-4 flex items-center gap-2 text-[#1D1D1F]">
-          <div className="w-8 h-8 bg-cyan-500 rounded-apple-md flex items-center justify-center text-white backdrop-blur-sm shadow-apple">AI</div>
-          <span>Video Lab</span>
+    <div className="flex flex-col h-screen bg-[#F5F5F7] text-[#1D1D1F] overflow-hidden">
+      {/* 顶栏导航 - Apple 风格 */}
+      <header className="h-16 border-b border-[#E5E5E7] backdrop-blur-xl bg-white/80 flex items-center justify-between px-6 shadow-sm">
+        {/* 左侧：项目名称（可点击切换） */}
+        <div className="flex items-center gap-4">
+          <div className="text-xl font-bold flex items-center gap-2 text-[#1D1D1F]">
+            <div className="w-8 h-8 bg-cyan-500 rounded-lg flex items-center justify-center text-white backdrop-blur-sm shadow-sm">AI</div>
+            <span>Video Lab</span>
+          </div>
+          
+          {/* 项目选择器 - 只有在挂载后才渲染依赖本地缓存的项目选择器 */}
+          {mounted && (
+            <div className="relative" ref={projectSelectorRef}>
+              <button
+                onClick={() => setIsProjectSelectorOpen(!isProjectSelectorOpen)}
+                className="px-4 py-2 bg-white/60 backdrop-blur-xl rounded-xl border border-gray-200/50 shadow-sm hover:bg-white/80 transition-all flex items-center gap-2 group min-w-0"
+              >
+                <Folder size={16} className="text-gray-600 flex-shrink-0" />
+                <span className="text-sm font-medium text-gray-800 truncate max-w-[200px]">
+                  {currentProject?.name || '选择项目'}
+                </span>
+                <ChevronDown 
+                  size={14} 
+                  className={`text-gray-400 transition-transform duration-200 flex-shrink-0 ${
+                    isProjectSelectorOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
+              
+              {/* 项目选择下拉菜单 - 确保在 mounted 且 isProjectSelectorOpen 为 true 时渲染 */}
+              {/* 注意：即使 storeHydrated 为 false，也尝试渲染，避免阻塞 */}
+              <AnimatePresence>
+                {mounted && isProjectSelectorOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2, ease: 'easeOut' }}
+                    className="absolute z-50 mt-2 w-64 bg-white/60 backdrop-blur-xl border border-gray-200/50 rounded-xl shadow-xl"
+                    style={{ overflow: 'visible' }}
+                  >
+                    <div 
+                      className="max-h-64 overflow-y-auto rounded-xl" 
+                      style={{ 
+                        minHeight: 'auto',
+                        maxHeight: '256px',
+                        overflowY: 'auto',
+                        overflowX: 'hidden'
+                      }}
+                    >
+                      {/* 水合检查：确保数据从 localStorage 恢复后再显示 */}
+                      {/* 如果未挂载，显示加载中；否则直接渲染项目列表 */}
+                      {!mounted ? (
+                        <div className="px-4 py-6 text-center text-sm text-gray-500">
+                          加载中...
+                        </div>
+                      ) : (() => {
+                        // 在下拉菜单打开时，强制从 store 获取最新数据（确保数据最新）
+                        const latestProjects = useProjectStore.getState().projects
+                        
+                        // 调试日志：确认数据读取是否正确
+                        console.log('📋 [下拉菜单渲染] 当前所有项目 (从 store 直接获取):', latestProjects)
+                        console.log('📋 [下拉菜单渲染] 项目数量:', latestProjects.length)
+                        console.log('📋 [下拉菜单渲染] projects 变量长度:', projects.length)
+                        console.log('📋 [下拉菜单渲染] 当前项目 ID:', currentProjectId)
+                        console.log('📋 [下拉菜单渲染] 项目详情:', latestProjects.map(p => ({ id: p.id, name: p.name })))
+                        console.log('📋 [下拉菜单渲染] latestProjects 是否为数组:', Array.isArray(latestProjects))
+                        console.log('📋 [下拉菜单渲染] latestProjects === projects:', latestProjects === projects)
+                        
+                        // 全量渲染：遍历 useProjectStore 中的所有项目（未过滤）
+                        if (!latestProjects || !Array.isArray(latestProjects) || latestProjects.length === 0) {
+                          console.warn('⚠️ [下拉菜单渲染] 项目列表为空或无效')
+                          return (
+                            <div className="px-4 py-6 text-center text-sm text-gray-500">
+                              暂无项目
+                            </div>
+                          )
+                        }
+                        
+                        console.log(`✅ [下拉菜单渲染] 准备渲染 ${latestProjects.length} 个项目`)
+                        
+                        // 直接创建项目按钮数组，不使用 Fragment
+                        const projectButtons = latestProjects.map((project, index) => {
+                          // 调试：输出每个项目的渲染信息
+                          console.log(`  ✓ [${index + 1}/${latestProjects.length}] 渲染项目: ${project.name} (ID: ${project.id})`)
+                          
+                          return (
+                            <button
+                              key={`project-${project.id}-${index}`}
+                              onClick={() => {
+                                console.log(`🖱️ 点击项目: ${project.name} (ID: ${project.id})`)
+                                // 更新 prevProjectIdRef 以便正确判断切换方向
+                                prevProjectIdRef.current = currentProjectId
+                                
+                                // 切换清理：点击时清空当前工作区状态
+                                setStoryText('')
+                                setSelectedScript(null)
+                                setAnalysisResult(null)
+                                
+                                // 点击事件：切换项目并关闭下拉菜单
+                                setCurrentProject(project.id)
+                                setIsProjectSelectorOpen(false)
+                              }}
+                              className={`w-full px-4 py-3 text-left hover:bg-white/80 transition-colors flex items-center justify-between group ${
+                                currentProjectId === project.id ? 'bg-cyan-500/10' : ''
+                              }`}
+                              style={{ 
+                                display: 'flex',
+                                width: '100%',
+                                minHeight: '48px',
+                                opacity: 1,
+                                visibility: 'visible'
+                              }}
+                            >
+                              {/* 项目信息 - 支持 truncate */}
+                              <div className="flex-1 min-w-0 pr-2">
+                                <div className="text-sm font-medium text-gray-800 truncate">
+                                  {project.name}
+                                </div>
+                                <div className="text-xs text-gray-500 mt-0.5 truncate">
+                                  {project.artStyle || '未设置'} · {project.culturalBackground || '未设置'}
+                                </div>
+                              </div>
+                              {/* 视觉反馈：当前选中的项目显示 CheckCircle 图标 */}
+                              {currentProjectId === project.id && (
+                                <CheckCircle 
+                                  size={16} 
+                                  className="text-cyan-500 flex-shrink-0 ml-2" 
+                                  strokeWidth={2.5}
+                                />
+                              )}
+                            </button>
+                          )
+                        })
+                        
+                        console.log(`✅ [下拉菜单渲染] 已创建 ${projectButtons.length} 个按钮元素`)
+                        console.log(`✅ [下拉菜单渲染] projectButtons 数组内容:`, projectButtons.map((btn, i) => `按钮${i + 1}`))
+                        
+                        return (
+                          <div>
+                            {/* 调试信息：显示项目数量（仅在开发环境） */}
+                            {process.env.NODE_ENV === 'development' && (
+                              <div className="px-4 py-2 text-xs text-gray-400 border-b border-gray-200/30">
+                                共 {projectButtons.length} 个项目
+                              </div>
+                            )}
+                            {/* 渲染项目列表 - 直接使用从 store 获取的最新数据（全量，未过滤） */}
+                            {projectButtons}
+                            {/* 新建项目按钮 */}
+                            <div className="border-t border-gray-200/50">
+                              <button
+                                onClick={() => {
+                                  setIsProjectSelectorOpen(false)
+                                  setIsCreatingProject(true)
+                                }}
+                                className="w-full px-4 py-3 text-left hover:bg-white/80 transition-colors flex items-center gap-2 text-sm text-gray-700"
+                              >
+                                <PlusIcon size={16} />
+                                <span>新建项目</span>
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
         </div>
         
-        <nav className="flex-1">
-          {steps.map((step) => (
-            <button
-              key={step.id}
-              onClick={() => setCurrentStep(step.id)}
-              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-apple-lg transition-all backdrop-blur-sm ${
-                currentStep === step.id 
-                ? 'bg-cyan-500/10 text-cyan-600 border border-[#E5E5E7] shadow-apple-cyan' 
-                : 'text-[#86868B] hover:bg-[#F5F5F7] border border-transparent'
-              }`}
-            >
-              {step.icon}
-              <span className="font-medium">{step.name}</span>
-            </button>
-          ))}
-        </nav>
-      </aside>
-
-      {/* 主操作区 - Apple 风格 */}
-      <main className="flex-1 relative flex flex-col p-8 backdrop-blur-xl overflow-hidden bg-[#FFFFFF] text-[#1D1D1F]">
-        {currentStep === 'overview' && (
-          <div className="max-w-6xl mx-auto w-full space-y-8">
-            {/* 标题区域 */}
-            <div className="text-center space-y-4">
-              <h1 className="text-4xl font-extrabold tracking-tight text-[#1D1D1F]">开启你的 AI 创意之旅</h1>
-              <p className="text-[#86868B] text-lg">从故事脚本到全片预览，一站式生成高品质 AI 视频</p>
-            </div>
-
-            {/* 背景设置区域 */}
-            <div className="backdrop-blur-xl bg-[#FFFFFF] rounded-apple-xl border border-[#E5E5E7] p-8 shadow-apple-lg">
-              <h2 className="text-2xl font-bold text-[#1D1D1F] mb-6">背景设置</h2>
-              
-              {/* 预设艺术风格库 */}
-              <div className="mb-8">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                  <span className="w-1 h-5 bg-cyan-500 rounded"></span>
-                  预设艺术风格库
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-                  {artStyles.map((style) => (
-                    <button
-                      key={style.id}
-                      onClick={() => setSelectedArtStyle(style.id === selectedArtStyle ? null : style.id)}
-                      className={`px-4 py-3 rounded-xl font-medium text-sm transition-all border-2 backdrop-blur-sm ${
-                        selectedArtStyle === style.id
-                          ? `${style.color} border-current shadow-md scale-105`
-                          : `${style.color} border-transparent hover:scale-102 hover:shadow-sm`
-                      }`}
-                    >
-                      {style.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 文化背景标签 */}
-              <div>
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                  <span className="w-1 h-5 bg-cyan-500 rounded"></span>
-                  文化背景标签
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {culturalBackgrounds.map((bg) => (
-                    <button
-                      key={bg.id}
-                      onClick={() => setSelectedCulturalBg(bg.id === selectedCulturalBg ? null : bg.id)}
-                      className={`px-4 py-3 rounded-xl font-medium text-sm transition-all border-2 backdrop-blur-sm ${
-                        selectedCulturalBg === bg.id
-                          ? `${bg.color} border-current shadow-md scale-105`
-                          : `${bg.color} border-transparent hover:scale-102 hover:shadow-sm`
-                      }`}
-                    >
-                      {bg.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 当前选择显示 */}
-              {(selectedArtStyle || selectedCulturalBg) && (
-                <div className="mt-6 p-4 bg-gray-50 rounded-xl border border-gray-300/50">
-                  <p className="text-sm font-medium text-gray-700 mb-2">当前选择：</p>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedArtStyle && (
-                      <span className="px-3 py-1.5 bg-cyan-100 text-cyan-700 rounded-lg text-sm font-medium border border-cyan-300">
-                        {artStyles.find(s => s.id === selectedArtStyle)?.name}
-                      </span>
-                    )}
-                    {selectedCulturalBg && (
-                      <span className="px-3 py-1.5 bg-purple-100 text-purple-700 rounded-lg text-sm font-medium border border-purple-300">
-                        {culturalBackgrounds.find(b => b.id === selectedCulturalBg)?.name}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* 创建项目按钮 */}
-            <div className="text-center">
-              <Button
-                onClick={() => setIsModalOpen(true)}
-                variant="primary"
-                size="lg"
-                icon={Plus}
-                className="mx-auto"
-              >
-                创建新项目
-              </Button>
-            </div>
+        {/* 右侧：艺术风格标签 - 只有在挂载后才渲染 */}
+        {mounted && currentProject && (
+          <div className="flex items-center gap-3">
+            <span className="px-3 py-1.5 bg-cyan-50 text-cyan-700 rounded-lg text-sm font-medium border border-cyan-200/50">
+              {currentProject.artStyle || '未设置'}
+            </span>
           </div>
         )}
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* 侧边栏导航 - Apple 风格 */}
+        <aside className="w-64 border-r border-[#E5E5E7] backdrop-blur-xl bg-[#FFFFFF] flex flex-col p-4 space-y-2 shadow-sm">
+          <nav className="flex-1">
+            {steps.map((step) => (
+              <button
+                key={step.id}
+                onClick={() => setCurrentStep(step.id)}
+                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-all backdrop-blur-sm ${
+                  currentStep === step.id 
+                  ? 'bg-cyan-500/10 text-cyan-600 border border-[#E5E5E7] shadow-sm' 
+                  : 'text-[#86868B] hover:bg-[#F5F5F7] border border-transparent'
+                }`}
+              >
+                {step.icon}
+                <span className="font-medium">{step.name}</span>
+              </button>
+            ))}
+          </nav>
+        </aside>
+
+      {/* 新建项目模态框 */}
+      <AnimatePresence>
+        {isCreatingProject && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+            onClick={() => setIsCreatingProject(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 shadow-2xl p-6 w-full max-w-md mx-4"
+            >
+              <h2 className="text-xl font-bold text-gray-800 mb-4">新建项目</h2>
+              
+              <div className="space-y-6">
+                {/* 项目名称 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    项目名称
+                  </label>
+                  <Input
+                    value={newProjectName}
+                    onChange={(e) => setNewProjectName(e.target.value)}
+                    placeholder="输入项目名称"
+                    className="w-full"
+                  />
+                </div>
+                
+                {/* 艺术风格 - 带快速选择 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    艺术风格
+                  </label>
+                  <Input
+                    value={newProjectArtStyle}
+                    onChange={(e) => setNewProjectArtStyle(e.target.value)}
+                    placeholder="选择或输入艺术风格"
+                    className="w-full mb-3"
+                  />
+                  {/* 快速选择区域 - Apple 风格浅色卡片 */}
+                  <div className="bg-gray-50/80 backdrop-blur-sm rounded-xl border border-gray-200/50 p-4">
+                    <div className="flex flex-wrap gap-2">
+                      {artStyles.map((style) => (
+                        <button
+                          key={style.id}
+                          type="button"
+                          onClick={() => setNewProjectArtStyle(style.name)}
+                          className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 border ${
+                            newProjectArtStyle === style.name
+                              ? `${style.color} border-current shadow-sm scale-105`
+                              : 'bg-white/60 text-gray-700 border-gray-300/50 hover:bg-cyan-500/10 hover:border-cyan-300/50'
+                          }`}
+                        >
+                          {style.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                
+                {/* 文化背景 - 带快速选择 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    文化背景
+                  </label>
+                  <Input
+                    value={newProjectCulturalBg}
+                    onChange={(e) => setNewProjectCulturalBg(e.target.value)}
+                    placeholder="选择或输入文化背景"
+                    className="w-full mb-3"
+                  />
+                  {/* 快速选择区域 - Apple 风格浅色卡片 */}
+                  <div className="bg-gray-50/80 backdrop-blur-sm rounded-xl border border-gray-200/50 p-4">
+                    <div className="flex flex-wrap gap-2">
+                      {culturalBackgrounds.map((bg) => (
+                        <button
+                          key={bg.id}
+                          type="button"
+                          onClick={() => setNewProjectCulturalBg(bg.name)}
+                          className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 border ${
+                            newProjectCulturalBg === bg.name
+                              ? `${bg.color} border-current shadow-sm scale-105`
+                              : 'bg-white/60 text-gray-700 border-gray-300/50 hover:bg-cyan-500/10 hover:border-cyan-300/50'
+                          }`}
+                        >
+                          {bg.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="flex gap-3 mt-6">
+                <Button
+                  onClick={() => {
+                    // 验证必填项
+                    if (!newProjectName.trim()) {
+                      alert('请输入项目名称')
+                      return
+                    }
+                    if (!newProjectArtStyle.trim()) {
+                      alert('请输入艺术风格')
+                      return
+                    }
+                    if (!newProjectCulturalBg.trim()) {
+                      alert('请输入文化背景')
+                      return
+                    }
+                    
+                    const projectId = addProject({
+                      name: newProjectName.trim(),
+                      artStyle: newProjectArtStyle.trim(),
+                      culturalBackground: newProjectCulturalBg.trim(),
+                    })
+                    setCurrentProject(projectId)
+                    setIsCreatingProject(false)
+                    setNewProjectName('')
+                    setNewProjectArtStyle('')
+                    setNewProjectCulturalBg('')
+                  }}
+                  className="flex-1"
+                >
+                  创建
+                </Button>
+                <Button
+                  onClick={() => {
+                    setIsCreatingProject(false)
+                    setNewProjectName('')
+                    setNewProjectArtStyle('')
+                    setNewProjectCulturalBg('')
+                  }}
+                  variant="secondary"
+                  className="flex-1"
+                >
+                  取消
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 主操作区 - Apple 风格 */}
+      <main className="flex-1 relative flex flex-col overflow-hidden bg-[#F5F5F7] text-[#1D1D1F]">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={currentProjectId || 'no-project'}
+            initial={{ 
+              opacity: 0, 
+              x: transitionDirection === 'right' ? 50 : -50 
+            }}
+            animate={{ 
+              opacity: isProjectTransitioning ? 0.7 : 1, 
+              x: 0 
+            }}
+            exit={{ 
+              opacity: 0, 
+              x: transitionDirection === 'right' ? -50 : 50 
+            }}
+            transition={{ 
+              duration: 0.3, 
+              ease: [0.4, 0, 0.2, 1] // iOS 风格的缓动函数
+            }}
+            className="flex-1 overflow-hidden"
+          >
+            {currentStep === 'overview' && (
+              <div className="flex-1 overflow-y-auto bg-gradient-to-br from-gray-50 via-white to-gray-50">
+                <div className="max-w-7xl mx-auto px-8 py-12">
+                  {/* 标题区域 - Apple 风格 */}
+                  <div className="mb-12 text-center">
+                    <h1 
+                      className="text-5xl font-bold tracking-tight text-[#1D1D1F] mb-3" 
+                      style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif' }}
+                    >
+                      选择项目
+                    </h1>
+                    <p 
+                      className="text-xl text-[#86868B] max-w-2xl mx-auto" 
+                      style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif' }}
+                    >
+                      选择一个项目开始创作，或创建新项目
+                    </p>
+                  </div>
+
+                  {/* 项目列表 - Apple 风格 */}
+                  {projects.length === 0 ? (
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="flex items-center justify-center min-h-[60vh]"
+                    >
+                      <div className="text-center max-w-md">
+                        <div className="w-24 h-24 bg-gradient-to-br from-cyan-100 to-blue-100 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-lg">
+                          <Folder size={48} className="text-cyan-600" />
+                        </div>
+                        <h3 
+                          className="text-2xl font-semibold text-gray-800 mb-3"
+                          style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif' }}
+                        >
+                          还没有项目
+                        </h3>
+                        <p className="text-gray-600 mb-8 text-lg">
+                          创建您的第一个项目，开始您的 AI 视频创作之旅
+                        </p>
+                        <Button
+                          onClick={() => setIsCreatingProject(true)}
+                          variant="primary"
+                          size="lg"
+                          icon={Plus}
+                          className="shadow-lg"
+                        >
+                          创建新项目
+                        </Button>
+                      </div>
+                    </motion.div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {projects.map((project, index) => {
+                        const projectImage = getProjectFirstStoryboardImage(project.id)
+                        const projectScripts = allScripts.filter((s: Script) => s.projectId === project.id)
+                        const projectStoryboardsCount = getProjectStoryboardCount(project.id)
+                        const isSelected = currentProjectId === project.id
+                        
+                        return (
+                          <motion.div
+                            key={project.id}
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.3, delay: index * 0.05 }}
+                            onClick={() => {
+                              // 更新 prevProjectIdRef 以便正确判断切换方向
+                              prevProjectIdRef.current = currentProjectId
+                              setCurrentProject(project.id)
+                            }}
+                            className={`group relative rounded-3xl overflow-hidden cursor-pointer transition-all duration-300 ${
+                              isSelected 
+                                ? 'ring-4 ring-cyan-500/50 shadow-2xl scale-[1.02]' 
+                                : 'shadow-lg hover:shadow-2xl hover:scale-[1.01]'
+                            }`}
+                          >
+                            {/* 背景图片（模糊处理） */}
+                            <div className="relative h-48 overflow-hidden">
+                              <div 
+                                className="absolute inset-0 bg-cover bg-center transition-transform duration-500 group-hover:scale-110"
+                                style={{
+                                  backgroundImage: projectImage 
+                                    ? `url(${projectImage})` 
+                                    : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                                  filter: 'blur(30px)',
+                                  transform: 'scale(1.2)',
+                                }}
+                              />
+                              <div className={`absolute inset-0 transition-colors ${
+                                isSelected ? 'bg-cyan-500/30' : 'bg-black/30 group-hover:bg-black/40'
+                              }`} />
+                              
+                              {/* 选中指示器 */}
+                              {isSelected && (
+                                <motion.div
+                                  initial={{ scale: 0 }}
+                                  animate={{ scale: 1 }}
+                                  className="absolute top-4 right-4"
+                                >
+                                  <div className="w-10 h-10 bg-cyan-500 rounded-full flex items-center justify-center shadow-xl">
+                                    <CheckCircle size={24} className="text-white" />
+                                  </div>
+                                </motion.div>
+                              )}
+                            </div>
+                            
+                            {/* 内容层 */}
+                            <div className="bg-white/95 backdrop-blur-xl p-6 border-t border-gray-100 relative">
+                              {/* 项目名称 */}
+                              <h3 
+                                className="text-xl font-bold text-gray-900 mb-3 truncate" 
+                                style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif' }}
+                              >
+                                {project.name}
+                              </h3>
+                              
+                              {/* 艺术风格和文化背景 - 必填项 */}
+                              <div className="flex flex-wrap gap-2 mb-4">
+                                <span className="px-3 py-1.5 bg-cyan-50 text-cyan-700 rounded-xl text-sm font-medium border border-cyan-200/50">
+                                  {project.artStyle || '未设置'}
+                                </span>
+                                <span className="px-3 py-1.5 bg-purple-50 text-purple-700 rounded-xl text-sm font-medium border border-purple-200/50">
+                                  {project.culturalBackground || '未设置'}
+                                </span>
+                              </div>
+                              
+                              {/* 项目统计 */}
+                              <div className="flex items-center gap-6 pt-4 border-t border-gray-100">
+                                <div className="flex items-center gap-2 text-sm text-gray-600">
+                                  <FileText size={16} className="text-gray-400" />
+                                  <span className="font-medium">{projectScripts.length}</span>
+                                  <span>剧本</span>
+                                </div>
+                                <div className="flex items-center gap-2 text-sm text-gray-600">
+                                  <LayoutGrid size={16} className="text-gray-400" />
+                                  <span className="font-medium">{projectStoryboardsCount}</span>
+                                  <span>分镜</span>
+                                </div>
+                              </div>
+                              
+                              {/* 悬停显示最后修改时间 */}
+                              <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                <div className="px-3 py-1.5 bg-black/80 backdrop-blur-sm text-white text-xs rounded-lg shadow-lg flex items-center gap-2">
+                                  <Clock size={12} />
+                                  <span>
+                                    {project.updatedAt 
+                                      ? `修改于 ${new Date(project.updatedAt).toLocaleString('zh-CN', { 
+                                          year: 'numeric', 
+                                          month: '2-digit', 
+                                          day: '2-digit', 
+                                          hour: '2-digit', 
+                                          minute: '2-digit' 
+                                        })}`
+                                      : project.createdAt 
+                                        ? `创建于 ${new Date(project.createdAt).toLocaleString('zh-CN', { 
+                                            year: 'numeric', 
+                                            month: '2-digit', 
+                                            day: '2-digit', 
+                                            hour: '2-digit', 
+                                            minute: '2-digit' 
+                                          })}`
+                                        : '未知时间'}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </motion.div>
+                        )
+                      })}
+                      
+                      {/* 创建新项目卡片 */}
+                      <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.3, delay: projects.length * 0.05 }}
+                        onClick={() => setIsCreatingProject(true)}
+                        className="group relative rounded-3xl overflow-hidden cursor-pointer border-2 border-dashed border-gray-300 hover:border-cyan-500 transition-all duration-300 bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center min-h-[300px] hover:shadow-xl"
+                      >
+                        <div className="text-center p-8">
+                          <div className="w-20 h-20 bg-gradient-to-br from-cyan-100 to-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-6 group-hover:from-cyan-200 group-hover:to-blue-200 transition-colors shadow-lg">
+                            <PlusIcon size={40} className="text-cyan-600" />
+                          </div>
+                          <h3 
+                            className="text-xl font-semibold text-gray-800 mb-2"
+                            style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif' }}
+                          >
+                            创建新项目
+                          </h3>
+                          <p className="text-gray-500 text-sm">
+                            开始新的创作之旅
+                          </p>
+                        </div>
+                      </motion.div>
+                  </div>
+                  )}
+                </div>
+              </div>
+            )}
 
         {/* 故事改编界面 */}
         {currentStep === 'story' && (
+          !currentProjectId ? (
+            <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-gray-50 to-white">
+              <div className="text-center max-w-md">
+                <div className="w-24 h-24 bg-gradient-to-br from-cyan-100 to-blue-100 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-lg">
+                  <Folder size={48} className="text-cyan-600" />
+                </div>
+                <h3 
+                  className="text-2xl font-semibold text-gray-800 mb-3"
+                  style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif' }}
+                >
+                  请先选择项目
+                </h3>
+                <p className="text-gray-600 mb-8 text-lg">
+                  在开始故事改编之前，请先在项目中心选择一个项目
+                </p>
+                <Button
+                  onClick={() => setCurrentStep('overview')}
+                  variant="primary"
+                  size="lg"
+                  icon={HomeIcon}
+                >
+                  前往项目中心
+                </Button>
+              </div>
+            </div>
+          ) : (
           <div className="flex h-full gap-6">
             {/* 左侧：故事输入区 - Apple 风格 */}
             <Card className="flex-1 flex flex-col" padding="md">
@@ -1759,6 +3034,7 @@ export default function App() {
                 placeholder="在此粘贴您的故事内容..."
                 className="flex-1 min-h-[300px]"
               />
+              
               <div className="mt-4 space-y-3">
                 <Button
                   onClick={handleAdaptStory}
@@ -2024,1630 +3300,50 @@ export default function App() {
               )}
             </Card>
           </div>
+          )
         )}
 
-        {/* 资产中心界面 - 浅色模式 */}
+        {/* 资产中心界面 */}
         {currentStep === 'assets' && (
-          <div className="flex flex-col h-full bg-gradient-to-br from-gray-50 to-white text-gray-900">
-            {/* 资产分类导航 */}
-            <div className="flex gap-2 p-4 border-b border-gray-300/50 bg-white/80 backdrop-blur-sm">
-              <button
-                onClick={() => {
-                  setAssetTab('character')
-                  setEditingAssetId(null)
-                  setEditingAssetType(null)
-                }}
-                className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
-                  assetTab === 'character'
-                    ? 'bg-cyan-500/10 text-cyan-600 border border-cyan-500/50'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
-                }`}
-              >
-                <User size={18} />
-                角色
-              </button>
-              <button
-                onClick={() => {
-                  setAssetTab('prop')
-                  setEditingAssetId(null)
-                  setEditingAssetType(null)
-                }}
-                className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
-                  assetTab === 'prop'
-                    ? 'bg-amber-500/10 text-amber-600 border border-amber-500/50'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
-                }`}
-              >
-                <Box size={18} />
-                道具
-              </button>
-              <button
-                onClick={() => {
-                  setAssetTab('scene')
-                  setEditingAssetId(null)
-                  setEditingAssetType(null)
-                }}
-                className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
-                  assetTab === 'scene'
-                    ? 'bg-green-500/10 text-green-600 border border-green-500/50'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
-                }`}
-              >
-                <MapPin size={18} />
-                场景
-              </button>
-              <button
-                onClick={() => {
-                  setAssetTab('settings')
-                  setEditingAssetId(null)
-                  setEditingAssetType(null)
-                }}
-                className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
-                  assetTab === 'settings'
-                    ? 'bg-indigo-500/10 text-indigo-600 border border-indigo-500/50'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
-                }`}
-              >
-                <Save size={18} />
-                全局设置
-              </button>
-            </div>
-
-            {/* 主内容区域 */}
-            <div className="flex-1 overflow-y-auto p-6">
-              {/* 角色 Tab */}
-              {assetTab === 'character' && (
-                <div>
-                  <div className="mb-6">
-                    <h2 className="text-2xl font-bold text-gray-900 mb-2">角色资产</h2>
-                    <p className="text-sm text-gray-600">管理故事中的角色设定和外观描述</p>
-                  </div>
-                  
-                  {storeCharacters.length === 0 ? (
-                    <div className="flex items-center justify-center h-64 text-gray-400">
-                      <div className="text-center">
-                        <User size={48} className="mx-auto mb-4 text-gray-300" />
-                        <p className="text-lg">暂无角色资产</p>
-                        <p className="text-sm mt-2">在"故事改编"页面完成改编后，角色会自动添加到这里</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {storeCharacters.map((character) => (
-                        <Card
-                          key={character.id}
-                          className="hover:shadow-apple-lg transition-all cursor-pointer"
-                          padding="lg"
-                        >
-                          {/* 参考图 */}
-                          {(() => {
-                            // 从统一的 assets 数组中查找对应的资产，获取 referenceImageUrl
-                            const store = useAssetStore.getState()
-                            const assets = store.getAssetsByCategory(AssetCategory.CHARACTER)
-                            const asset = assets.find(a => a.name === character.name)
-                            const imageUrl = asset?.referenceImageUrl
-                            
-                            return (
-                              <div className="w-full aspect-square rounded-apple-lg mb-4 border border-[#E5E5E5] relative group overflow-hidden bg-gradient-to-br from-cyan-100 to-purple-100">
-                                {imageUrl ? (
-                                  <img 
-                                    src={imageUrl} 
-                                    alt={character.name}
-                                    className="w-full h-full object-cover"
-                                  />
-                                ) : (
-                                  <>
-                                    <Image size={48} className="text-[#86868B] absolute inset-0 m-auto" />
-                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-all rounded-apple-lg flex items-center justify-center">
-                                      <span className="text-xs text-[#86868B] opacity-0 group-hover:opacity-100 transition-opacity">
-                                        点击生成参考图
-                                      </span>
-                                    </div>
-                                  </>
-                                )}
-                                {generatingImageId === character.id && (
-                                  <div className="absolute inset-0 backdrop-blur-md bg-white/70 border border-white/50 flex flex-col items-center justify-center rounded-apple-lg shadow-apple-lg z-10">
-                                    <Loader2 size={32} className="text-[#1D1D1F] animate-spin mb-2" />
-                                    <span className="text-sm font-medium text-[#1D1D1F]">生成中 {Math.round(generatingImageProgress)}%</span>
-                                    <div className="mt-2 w-32 h-1 bg-[#E5E5E5] rounded-full overflow-hidden">
-                                      <div 
-                                        className="h-full bg-[#007AFF] transition-all duration-300 rounded-full"
-                                        style={{ width: `${generatingImageProgress}%` }}
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })()}
-                          
-                          {/* 角色名称 */}
-                          <h3 className="text-lg font-bold text-[#1D1D1F] mb-2">
-                            {editingAssetId === character.id && editingAssetType === 'character' ? (
-                              <Input
-                                type="text"
-                                value={editingName}
-                                onChange={(e) => setEditingName(e.target.value)}
-                                className="text-lg font-bold"
-                                autoFocus
-                              />
-                            ) : (
-                              character.name
-                            )}
-                          </h3>
-                          
-                          {/* 角色描述 */}
-                          <div className="mb-4">
-                            {editingAssetId === character.id && editingAssetType === 'character' ? (
-                              <Textarea
-                                value={editingDescription}
-                                onChange={(e) => setEditingDescription(e.target.value)}
-                                className="text-sm"
-                                rows={3}
-                                placeholder="输入角色描述..."
-                              />
-                            ) : (
-                              <p className="text-sm text-[#86868B] line-clamp-3">{character.description}</p>
-                            )}
-                          </div>
-                          
-                          {/* 操作按钮 */}
-                          <div className="flex flex-col gap-2">
-                            {editingAssetId === character.id && editingAssetType === 'character' ? (
-                              <div className="flex gap-2">
-                                <Button
-                                  onClick={() => {
-                                    updateCharacter(character.id, {
-                                      name: editingName,
-                                      description: editingDescription,
-                                    })
-                                    setEditingAssetId(null)
-                                    setEditingAssetType(null)
-                                  }}
-                                  variant="primary"
-                                  size="sm"
-                                  icon={Save}
-                                  className="flex-1"
-                                >
-                                  保存
-                                </Button>
-                                <Button
-                                  onClick={() => {
-                                    setEditingAssetId(null)
-                                    setEditingAssetType(null)
-                                  }}
-                                  variant="secondary"
-                                  size="sm"
-                                  icon={X}
-                                  aria-label="取消"
-                                />
-                              </div>
-                            ) : (
-                              <>
-                                <div className="flex gap-2">
-                                  <Button
-                                    onClick={() => {
-                                      setEditingAssetId(character.id)
-                                      setEditingAssetType('character')
-                                      setEditingName(character.name)
-                                      setEditingDescription(character.description)
-                                    }}
-                                    variant="secondary"
-                                    size="sm"
-                                    icon={Edit3}
-                                    className="flex-1"
-                                  >
-                                    编辑
-                                  </Button>
-                                  <Button
-                                    onClick={() => {
-                                      if (confirm(`确定要删除角色"${character.name}"吗？`)) {
-                                        removeCharacter(character.id)
-                                      }
-                                    }}
-                                    variant="ghost"
-                                    size="sm"
-                                    icon={Trash2}
-                                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                                    aria-label="删除"
-                                  />
-                                </div>
-                                <Button
-                                  onClick={() => handleGenerateAssetImage(character.id, character.description, 'character')}
-                                  disabled={generatingImageId === character.id || !character.description.trim()}
-                                  variant="primary"
-                                  size="sm"
-                                  icon={generatingImageId === character.id ? Loader2 : Sparkles}
-                                  fullWidth
-                                  className={generatingImageId === character.id ? 'opacity-50' : ''}
-                                >
-                                  {generatingImageId === character.id ? '生成中...' : '生成形象'}
-                                </Button>
-                              </>
-                            )}
-                          </div>
-                        </Card>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* 道具 Tab */}
-              {assetTab === 'prop' && (
-                <div>
-                  <div className="mb-6">
-                    <h2 className="text-2xl font-bold text-gray-900 mb-2">道具资产</h2>
-                    <p className="text-sm text-gray-600">管理故事中的关键道具及其视觉细节</p>
-                  </div>
-                  
-                  {storeProps.length === 0 ? (
-                    <div className="flex items-center justify-center h-64 text-gray-400">
-                      <div className="text-center">
-                        <Box size={48} className="mx-auto mb-4 text-gray-300" />
-                        <p className="text-lg">暂无道具资产</p>
-                        <p className="text-sm mt-2">在"故事改编"页面完成改编后，道具会自动添加到这里</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {storeProps.map((prop) => (
-                        <Card
-                          key={prop.id}
-                          className="hover:shadow-apple-lg transition-all cursor-pointer"
-                          padding="lg"
-                        >
-                          {/* 参考图 */}
-                          {(() => {
-                            const store = useAssetStore.getState()
-                            const assets = store.getAssetsByCategory(AssetCategory.PROP)
-                            const asset = assets.find(a => a.name === prop.name)
-                            const imageUrl = asset?.referenceImageUrl
-                            
-                            return (
-                              <div className="w-full aspect-square rounded-apple-lg mb-4 border border-[#E5E5E5] relative group overflow-hidden bg-gradient-to-br from-amber-100 to-orange-100">
-                                {imageUrl ? (
-                                  <img 
-                                    src={imageUrl} 
-                                    alt={prop.name}
-                                    className="w-full h-full object-cover"
-                                  />
-                                ) : (
-                                  <>
-                                    <Box size={48} className="text-[#86868B] absolute inset-0 m-auto" />
-                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-all rounded-apple-lg flex items-center justify-center">
-                                      <span className="text-xs text-[#86868B] opacity-0 group-hover:opacity-100 transition-opacity">
-                                        点击生成参考图
-                                      </span>
-                                    </div>
-                                  </>
-                                )}
-                                {generatingImageId === prop.id && (
-                                  <div className="absolute inset-0 backdrop-blur-md bg-white/70 border border-white/50 flex flex-col items-center justify-center rounded-apple-lg shadow-apple-lg z-10">
-                                    <Loader2 size={32} className="text-[#1D1D1F] animate-spin mb-2" />
-                                    <span className="text-sm font-medium text-[#1D1D1F]">生成中 {Math.round(generatingImageProgress)}%</span>
-                                    <div className="mt-2 w-32 h-1 bg-[#E5E5E5] rounded-full overflow-hidden">
-                                      <div 
-                                        className="h-full bg-[#007AFF] transition-all duration-300 rounded-full"
-                                        style={{ width: `${generatingImageProgress}%` }}
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })()}
-                          
-                          {/* 道具名称 */}
-                          <h3 className="text-lg font-bold text-gray-900 mb-2">
-                            {editingAssetId === prop.id && editingAssetType === 'prop' ? (
-                              <input
-                                type="text"
-                                value={editingName}
-                                onChange={(e) => setEditingName(e.target.value)}
-                                className="w-full px-2 py-1 border border-gray-300 rounded text-lg font-bold"
-                                autoFocus
-                              />
-                            ) : (
-                              prop.name
-                            )}
-                          </h3>
-                          
-                          {/* 道具名称 */}
-                          <h3 className="text-lg font-bold text-[#1D1D1F] mb-2">
-                            {editingAssetId === prop.id && editingAssetType === 'prop' ? (
-                              <Input
-                                type="text"
-                                value={editingName}
-                                onChange={(e) => setEditingName(e.target.value)}
-                                className="text-lg font-bold"
-                                autoFocus
-                              />
-                            ) : (
-                              prop.name
-                            )}
-                          </h3>
-                          
-                          {/* 道具视觉细节 */}
-                          <div className="mb-4">
-                            {editingAssetId === prop.id && editingAssetType === 'prop' ? (
-                              <Textarea
-                                value={editingDescription}
-                                onChange={(e) => setEditingDescription(e.target.value)}
-                                className="text-sm"
-                                rows={3}
-                                placeholder="输入道具的视觉细节..."
-                              />
-                            ) : (
-                              <p className="text-sm text-[#86868B] line-clamp-3">{prop.visualDetails}</p>
-                            )}
-                          </div>
-                          
-                          {/* 操作按钮 */}
-                          <div className="flex flex-col gap-2">
-                            {editingAssetId === prop.id && editingAssetType === 'prop' ? (
-                              <div className="flex gap-2">
-                                <Button
-                                  onClick={() => {
-                                    updateProp(prop.id, {
-                                      name: editingName,
-                                      visualDetails: editingDescription,
-                                    })
-                                    setEditingAssetId(null)
-                                    setEditingAssetType(null)
-                                  }}
-                                  variant="primary"
-                                  size="sm"
-                                  icon={Save}
-                                  className="flex-1"
-                                >
-                                  保存
-                                </Button>
-                                <Button
-                                  onClick={() => {
-                                    setEditingAssetId(null)
-                                    setEditingAssetType(null)
-                                  }}
-                                  variant="secondary"
-                                  size="sm"
-                                  icon={X}
-                                  aria-label="取消"
-                                />
-                              </div>
-                            ) : (
-                              <>
-                                <div className="flex gap-2">
-                                  <Button
-                                    onClick={() => {
-                                      setEditingAssetId(prop.id)
-                                      setEditingAssetType('prop')
-                                      setEditingName(prop.name)
-                                      setEditingDescription(prop.visualDetails)
-                                    }}
-                                    variant="secondary"
-                                    size="sm"
-                                    icon={Edit3}
-                                    className="flex-1"
-                                  >
-                                    编辑
-                                  </Button>
-                                  <Button
-                                    onClick={() => {
-                                      if (confirm(`确定要删除道具"${prop.name}"吗？`)) {
-                                        removeProp(prop.id)
-                                      }
-                                    }}
-                                    variant="ghost"
-                                    size="sm"
-                                    icon={Trash2}
-                                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                                    aria-label="删除"
-                                  />
-                                </div>
-                                <Button
-                                  onClick={() => handleGenerateAssetImage(prop.id, prop.visualDetails, 'prop')}
-                                  disabled={generatingImageId === prop.id || !prop.visualDetails.trim()}
-                                  variant="primary"
-                                  size="sm"
-                                  icon={generatingImageId === prop.id ? Loader2 : Sparkles}
-                                  fullWidth
-                                  className={generatingImageId === prop.id ? 'opacity-50' : ''}
-                                >
-                                  {generatingImageId === prop.id ? '生成中...' : '生成形象'}
-                                </Button>
-                              </>
-                            )}
-                          </div>
-                        </Card>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* 场景 Tab */}
-              {assetTab === 'scene' && (
-                <div>
-                  <div className="mb-6">
-                    <h2 className="text-2xl font-bold text-gray-900 mb-2">场景资产</h2>
-                    <p className="text-sm text-gray-600">管理故事中的核心场景及其环境描述</p>
-                  </div>
-                  
-                  {storeScenes.length === 0 ? (
-                    <div className="flex items-center justify-center h-64 text-gray-400">
-                      <div className="text-center">
-                        <MapPin size={48} className="mx-auto mb-4 text-gray-300" />
-                        <p className="text-lg">暂无场景资产</p>
-                        <p className="text-sm mt-2">在"故事改编"页面完成改编后，场景会自动添加到这里</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {storeScenes.map((scene) => (
-                        <Card
-                          key={scene.id}
-                          className="hover:shadow-apple-lg transition-all cursor-pointer"
-                          padding="lg"
-                        >
-                          {/* 参考图 */}
-                          {(() => {
-                            const store = useAssetStore.getState()
-                            const assets = store.getAssetsByCategory(AssetCategory.SCENE)
-                            const asset = assets.find(a => a.name === scene.name)
-                            const imageUrl = asset?.referenceImageUrl
-                            
-                            return (
-                              <div className="w-full aspect-square rounded-apple-lg mb-4 border border-[#E5E5E5] relative group overflow-hidden bg-gradient-to-br from-green-100 to-emerald-100">
-                                {imageUrl ? (
-                                  <img 
-                                    src={imageUrl} 
-                                    alt={scene.name}
-                                    className="w-full h-full object-cover"
-                                  />
-                                ) : (
-                                  <>
-                                    <MapPin size={48} className="text-[#86868B] absolute inset-0 m-auto" />
-                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-all rounded-apple-lg flex items-center justify-center">
-                                      <span className="text-xs text-[#86868B] opacity-0 group-hover:opacity-100 transition-opacity">
-                                        点击生成参考图
-                                      </span>
-                                    </div>
-                                  </>
-                                )}
-                                {generatingImageId === scene.id && (
-                                  <div className="absolute inset-0 backdrop-blur-md bg-white/70 border border-white/50 flex flex-col items-center justify-center rounded-apple-lg shadow-apple-lg z-10">
-                                    <Loader2 size={32} className="text-[#1D1D1F] animate-spin mb-2" />
-                                    <span className="text-sm font-medium text-[#1D1D1F]">生成中 {Math.round(generatingImageProgress)}%</span>
-                                    <div className="mt-2 w-32 h-1 bg-[#E5E5E5] rounded-full overflow-hidden">
-                                      <div 
-                                        className="h-full bg-[#007AFF] transition-all duration-300 rounded-full"
-                                        style={{ width: `${generatingImageProgress}%` }}
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })()}
-                          
-                          {/* 场景名称 */}
-                          <h3 className="text-lg font-bold text-[#1D1D1F] mb-2">
-                            {editingAssetId === scene.id && editingAssetType === 'scene' ? (
-                              <Input
-                                type="text"
-                                value={editingName}
-                                onChange={(e) => setEditingName(e.target.value)}
-                                className="text-lg font-bold"
-                                autoFocus
-                              />
-                            ) : (
-                              scene.name
-                            )}
-                          </h3>
-                          
-                          {/* 场景描述 */}
-                          <div className="mb-4">
-                            {editingAssetId === scene.id && editingAssetType === 'scene' ? (
-                              <Textarea
-                                value={editingDescription}
-                                onChange={(e) => setEditingDescription(e.target.value)}
-                                className="text-sm"
-                                rows={3}
-                                placeholder="输入场景描述..."
-                              />
-                            ) : (
-                              <p className="text-sm text-[#86868B] line-clamp-3">{scene.description}</p>
-                            )}
-                          </div>
-                          
-                          {/* 操作按钮 */}
-                          <div className="flex flex-col gap-2">
-                            {editingAssetId === scene.id && editingAssetType === 'scene' ? (
-                              <div className="flex gap-2">
-                                <Button
-                                  onClick={() => {
-                                    updateScene(scene.id, {
-                                      name: editingName,
-                                      description: editingDescription,
-                                    })
-                                    setEditingAssetId(null)
-                                    setEditingAssetType(null)
-                                  }}
-                                  variant="primary"
-                                  size="sm"
-                                  icon={Save}
-                                  className="flex-1"
-                                >
-                                  保存
-                                </Button>
-                                <Button
-                                  onClick={() => {
-                                    setEditingAssetId(null)
-                                    setEditingAssetType(null)
-                                  }}
-                                  variant="secondary"
-                                  size="sm"
-                                  icon={X}
-                                  aria-label="取消"
-                                />
-                              </div>
-                            ) : (
-                              <>
-                                <div className="flex gap-2">
-                                  <Button
-                                    onClick={() => {
-                                      setEditingAssetId(scene.id)
-                                      setEditingAssetType('scene')
-                                      setEditingName(scene.name)
-                                      setEditingDescription(scene.description)
-                                    }}
-                                    variant="secondary"
-                                    size="sm"
-                                    icon={Edit3}
-                                    className="flex-1"
-                                  >
-                                    编辑
-                                  </Button>
-                                  <Button
-                                    onClick={() => {
-                                      if (confirm(`确定要删除场景"${scene.name}"吗？`)) {
-                                        removeScene(scene.id)
-                                      }
-                                    }}
-                                    variant="ghost"
-                                    size="sm"
-                                    icon={Trash2}
-                                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                                    aria-label="删除"
-                                  />
-                                </div>
-                                <Button
-                                  onClick={() => handleGenerateAssetImage(scene.id, scene.description, 'scene')}
-                                  disabled={generatingImageId === scene.id || !scene.description.trim()}
-                                  variant="primary"
-                                  size="sm"
-                                  icon={generatingImageId === scene.id ? Loader2 : Sparkles}
-                                  fullWidth
-                                  className={generatingImageId === scene.id ? 'opacity-50' : ''}
-                                >
-                                  {generatingImageId === scene.id ? '生成中...' : '生成形象'}
-                                </Button>
-                              </>
-                            )}
-                          </div>
-                        </Card>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* 全局设置 Tab */}
-              {assetTab === 'settings' && (
-                <div className="max-w-2xl mx-auto">
-                  <div className="mb-6">
-                    <h2 className="text-2xl font-bold text-gray-900 mb-2">全局设置</h2>
-                    <p className="text-sm text-gray-600">管理项目的视觉基调和全局配置</p>
-                  </div>
-                  
-                  <Card padding="lg">
-                    <div className="mb-4">
-                      <Input
-                        type="text"
-                        label="视觉基调"
-                        value={storeTheme || ''}
-                        onChange={(e) => setTheme(e.target.value)}
-                        placeholder="例如：赛博朋克、极简主义、水墨风、3D粘土..."
-                        helperText="这个视觉基调将应用于所有场景的图像生成"
-                      />
-                    </div>
-                    
-                    {storeTheme && (
-                      <div className="mt-4 p-4 bg-indigo-50 rounded-lg border border-indigo-200">
-                        <p className="text-sm font-medium text-indigo-800 mb-1">当前视觉基调</p>
-                        <p className="text-lg font-bold text-indigo-900">{storeTheme}</p>
-                      </div>
-                    )}
-                  </Card>
-                </div>
-              )}
-            </div>
-          </div>
+          <AssetCenter
+            currentProjectId={currentProjectId}
+            onNavigateToOverview={() => setCurrentStep('overview')}
+            selectedScript={selectedScript}
+            generatingImageId={generatingImageId}
+            onGenerateAssetImage={handleGenerateAssetImage}
+          />
         )}
 
         {/* 分镜管理界面 */}
         {currentStep === 'storyboard' && (
-          <div className="flex flex-col h-full bg-gradient-to-br from-gray-900 via-slate-800 to-gray-900 p-6 overflow-y-auto">
-            <div className="mb-6">
-              <h1 className="text-3xl font-bold text-white mb-2">分镜管理</h1>
-              <p className="text-gray-400">管理视频分镜，关联角色和场景，生成对白音频</p>
-            </div>
-
-            {/* 全局风格设定 */}
-            <div className="mb-6 bg-slate-800/50 backdrop-blur-xl border border-white/10 rounded-xl p-4">
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
-                    <SparklesIcon size={16} className="text-cyan-400" />
-                    全局风格设定
-                  </label>
-                  <input
-                    type="text"
-                    value={globalStyle}
-                    onChange={(e) => setGlobalStyle(e.target.value)}
-                    placeholder="例如：赛博朋克风格、新海诚动画风、3D 粘土风格..."
-                    className="w-full px-4 py-2.5 bg-slate-900/50 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 text-sm"
-                  />
-                  <p className="text-xs text-gray-500 mt-2">
-                    此风格将自动应用到所有分镜图的生成中
-                  </p>
-                </div>
-                {globalStyle && (
-                  <button
-                    onClick={() => setGlobalStyle('')}
-                    className="px-4 py-2.5 text-gray-400 hover:text-white hover:bg-slate-700/50 rounded-lg transition-all text-sm"
-                  >
-                    <X size={18} />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* 六宫格布局 */}
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
-              {storyboards.map((storyboard) => {
-                // 从assets数组读取最新的角色配置（确保数据一致性）
-                const selectedCharacter = storyboard.characterId 
-                  ? assets.find(a => a.id === storyboard.characterId)
-                  : null
-                const selectedScene = storyboard.sceneId
-                  ? mockScenes.find(s => s.id === storyboard.sceneId)
-                  : null
-                
-                // 获取当前角色的音色名称
-                const currentVoiceName = selectedCharacter 
-                  ? (voicePresets.find(v => v.id === selectedCharacter.voiceModel)?.name || selectedCharacter.voiceModel)
-                  : null
-
-                return (
-                  <div
-                    key={storyboard.id}
-                    className="bg-slate-900/50 backdrop-blur-xl border border-white/10 rounded-xl overflow-hidden shadow-xl"
-                  >
-                    {/* 预览图区域 */}
-                    <div className="relative aspect-video bg-gradient-to-br from-cyan-900/30 to-purple-900/30 group">
-                      {storyboard.imageUrl ? (
-                        <img 
-                          src={storyboard.imageUrl} 
-                          alt="分镜预览" 
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <Image size={48} className="text-gray-500" />
-                        </div>
-                      )}
-                      
-                      {/* 重绘悬浮按钮 */}
-                      <button
-                        onClick={() => {
-                          // 模拟重绘逻辑
-                          setStoryboards(prev => 
-                            prev.map(sb => 
-                              sb.id === storyboard.id 
-                                ? { ...sb, status: 'image-generated' as StoryboardStatus }
-                                : sb
-                            )
-                          )
-                        }}
-                        className="absolute top-2 right-2 p-2 bg-black/60 backdrop-blur-sm rounded-lg text-white hover:bg-black/80 transition-all opacity-0 group-hover:opacity-100"
-                      >
-                        <RefreshCw size={16} />
-                      </button>
-
-                      {/* 生成分镜按钮 - 当有对白、角色、场景时显示 */}
-                      {!storyboard.imageUrl && storyboard.dialogue && storyboard.characterId && storyboard.sceneId && (
-                        <button
-                          onClick={() => {
-                            const character = assets.find(a => a.id === storyboard.characterId)
-                            const scene = mockScenes.find(s => s.id === storyboard.sceneId)
-                            
-                            if (!character || !scene) return
-
-                            // 组合提示词：视觉描述 + 对白 + 角色提示词 + 场景提示词 + 全局风格
-                            const visualDesc = storyboard.visualDescription || ''
-                            // 使用 enhancePrompt 增强视觉描述
-                            const enhancedVisualDesc = enhancePrompt(visualDesc)
-                            // 构建基础提示词
-                            let combinedPrompt = `${enhancedVisualDesc} ${storyboard.dialogue ? `. ${storyboard.dialogue}` : ''}. Character: ${character.prompt}. Scene: ${scene.prompt}. 16:9 aspect ratio`.trim()
-                            // 如果有全局风格，追加到提示词末尾
-                            if (globalStyle && globalStyle.trim()) {
-                              combinedPrompt = `${combinedPrompt}, ${globalStyle.trim()}`
-                            }
-
-                            // 模拟生成分镜图（3秒）
-                            setStoryboards(prev => 
-                              prev.map(sb => 
-                                sb.id === storyboard.id 
-                                  ? { ...sb, status: 'waiting-render' as StoryboardStatus }
-                                  : sb
-                              )
-                            )
-
-                            setTimeout(() => {
-                              // 生成完成后设置图片URL（这里使用占位图）
-                              setStoryboards(prev => 
-                                prev.map(sb => 
-                                  sb.id === storyboard.id 
-                                    ? { 
-                                        ...sb, 
-                                        imageUrl: `https://via.placeholder.com/1920x1080/1a1a2e/ffffff?text=分镜+${storyboard.id}`,
-                                        status: 'image-generated' as StoryboardStatus
-                                      }
-                                    : sb
-                                )
-                              )
-                            }, 3000)
-                          }}
-                          className="absolute bottom-2 left-2 px-4 py-2 bg-cyan-500/90 hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition-all backdrop-blur-sm"
-                        >
-                          生成分镜
-                        </button>
-                      )}
-                    </div>
-
-                    {/* 卡片内容区域 */}
-                    <div className="p-4 space-y-4">
-                      {/* 关联槽位 */}
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-gray-400">角色</label>
-                        <select
-                          value={storyboard.characterId || ''}
-                          onChange={(e) => {
-                            setStoryboards(prev => 
-                              prev.map(sb => 
-                                sb.id === storyboard.id 
-                                  ? { ...sb, characterId: e.target.value || null }
-                                  : sb
-                              )
-                            )
-                          }}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-cyan-500/50"
-                        >
-                          <option value="">选择角色</option>
-                          {assets.map(asset => (
-                            <option key={asset.id} value={asset.id} className="bg-slate-800">
-                              {asset.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-gray-400">场景</label>
-                        <select
-                          value={storyboard.sceneId || ''}
-                          onChange={(e) => {
-                            setStoryboards(prev => 
-                              prev.map(sb => 
-                                sb.id === storyboard.id 
-                                  ? { ...sb, sceneId: e.target.value || null }
-                                  : sb
-                              )
-                            )
-                          }}
-                          className="w-full px-3 py-2 bg-slate-800/50 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-cyan-500/50"
-                        >
-                          <option value="">选择场景</option>
-                          {mockScenes.map(scene => (
-                            <option key={scene.id} value={scene.id} className="bg-slate-800">
-                              {scene.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* 视觉描述（Prompt） */}
-                      {storyboard.visualDescription && (
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium text-gray-400 flex items-center gap-2">
-                            <Image size={14} />
-                            视觉描述 (Prompt)
-                          </label>
-                          <div className="px-3 py-2 bg-slate-800/30 border border-cyan-500/30 rounded-lg text-white text-xs">
-                            {storyboard.visualDescription}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 文本/对白区 */}
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-gray-400">对白</label>
-                        {editingStoryboardId === storyboard.id ? (
-                          <div className="space-y-2">
-                            <textarea
-                              value={editingDialogue}
-                              onChange={(e) => setEditingDialogue(e.target.value)}
-                              onBlur={() => {
-                                setStoryboards(prev => 
-                                  prev.map(sb => 
-                                    sb.id === storyboard.id 
-                                      ? { ...sb, dialogue: editingDialogue }
-                                      : sb
-                                  )
-                                )
-                                setEditingStoryboardId(null)
-                              }}
-                              className="w-full px-3 py-2 bg-slate-800/50 border border-cyan-500/50 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/20 resize-none"
-                              rows={3}
-                              autoFocus
-                            />
-                            <button
-                              onClick={() => {
-                                setStoryboards(prev => 
-                                  prev.map(sb => 
-                                    sb.id === storyboard.id 
-                                      ? { ...sb, dialogue: editingDialogue }
-                                      : sb
-                                  )
-                                )
-                                setEditingStoryboardId(null)
-                              }}
-                              className="w-full px-3 py-1.5 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg text-sm font-medium transition-all"
-                            >
-                              保存
-                            </button>
-                          </div>
-                        ) : (
-                          <div
-                            onClick={() => {
-                              setEditingStoryboardId(storyboard.id)
-                              setEditingDialogue(storyboard.dialogue)
-                            }}
-                            className="px-3 py-2 bg-slate-800/50 border border-white/10 rounded-lg text-white text-sm min-h-[60px] cursor-text hover:border-cyan-500/50 transition-all flex items-start gap-2"
-                          >
-                            <Edit3 size={14} className="text-gray-500 mt-0.5 flex-shrink-0" />
-                            <span className="flex-1">{storyboard.dialogue}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 合成语音按钮 */}
-                      <button
-                        onClick={() => {
-                          if (!storyboard.characterId) {
-                            alert('请先选择角色')
-                            return
-                          }
-
-                          // 从assets数组读取最新的角色配置（确保数据一致性）
-                          const character = assets.find(a => a.id === storyboard.characterId)
-                          if (!character) return
-
-                          // 设置生成中状态
-                          setStoryboards(prev => 
-                            prev.map(sb => 
-                              sb.id === storyboard.id 
-                                ? { ...sb, isGeneratingAudio: true }
-                                : sb
-                            )
-                          )
-
-                          // 模拟音频生成（3秒）
-                          // 使用角色的TTS参数：voiceModel, speed, emotion
-                          // 这里可以调用实际的TTS API，传入：
-                          // - text: storyboard.dialogue
-                          // - voiceModel: character.voiceModel
-                          // - speed: character.speed
-                          // - emotion: character.emotion
-                          setTimeout(() => {
-                            setStoryboards(prev => 
-                              prev.map(sb => 
-                                sb.id === storyboard.id 
-                                  ? { 
-                                      ...sb, 
-                                      isGeneratingAudio: false,
-                                      status: 'audio-synthesized' as StoryboardStatus
-                                    }
-                                  : sb
-                              )
-                            )
-                          }, 3000)
-                        }}
-                        disabled={storyboard.isGeneratingAudio || !storyboard.characterId}
-                        className="w-full flex flex-col items-center gap-2 px-4 py-2.5 bg-purple-500/80 hover:bg-purple-600/80 text-white rounded-lg text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {storyboard.isGeneratingAudio ? (
-                          <>
-                            {/* 音频波形生成中动画 */}
-                            <div className="flex items-end gap-1 h-4">
-                              <div className="w-1 bg-white rounded-full wave-bar" style={{ animationDelay: '0ms', height: '40%' }}></div>
-                              <div className="w-1 bg-white rounded-full wave-bar" style={{ animationDelay: '100ms', height: '70%' }}></div>
-                              <div className="w-1 bg-white rounded-full wave-bar" style={{ animationDelay: '200ms', height: '100%' }}></div>
-                              <div className="w-1 bg-white rounded-full wave-bar" style={{ animationDelay: '300ms', height: '85%' }}></div>
-                              <div className="w-1 bg-white rounded-full wave-bar" style={{ animationDelay: '400ms', height: '60%' }}></div>
-                            </div>
-                            <span className="text-xs text-center">
-                              正在以 <span className="font-semibold">[{currentVoiceName || '未知'}]</span> 模式合成
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <div className="flex items-center gap-2">
-                              <Volume2 size={16} />
-                              <span>合成语音</span>
-                            </div>
-                            {currentVoiceName && (
-                              <span className="text-xs opacity-75">
-                                将使用: {currentVoiceName}
-                              </span>
-                            )}
-                          </>
-                        )}
-                      </button>
-
-                      {/* 生成状态显示 */}
-                      <div className="flex items-center gap-2 text-xs">
-                        {storyboard.status === 'image-generated' && (
-                          <>
-                            <CheckCircle size={14} className="text-green-400" />
-                            <span className="text-green-400">图片已生成</span>
-                          </>
-                        )}
-                        {storyboard.status === 'audio-synthesized' && (
-                          <>
-                            <CheckCircle size={14} className="text-blue-400" />
-                            <span className="text-blue-400">音频已合成</span>
-                          </>
-                        )}
-                        {storyboard.status === 'waiting-render' && (
-                          <>
-                            <Clock size={14} className="text-yellow-400" />
-                            <span className="text-yellow-400">等待渲染</span>
-                          </>
-                        )}
-                        {storyboard.status === 'pending' && (
-                          <>
-                            <Loader size={14} className="text-gray-400 animate-spin" />
-                            <span className="text-gray-400">待处理</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+          <StoryboardManagement
+            currentProjectId={currentProjectId}
+            storeCharacters={storeCharacters}
+            storeProps={storeProps}
+            storeScenes={storeScenes}
+            selectedScript={selectedScript}
+            scripts={scripts} // 传递所有剧本列表，用于自动关联
+            onNavigateToOverview={() => setCurrentStep('overview')}
+            onNavigateToAssets={() => setCurrentStep('assets')} // 导航到资产中心
+            onSelectScript={setSelectedScript} // 传递选择剧本的回调
+          />
         )}
 
-        {/* 剧本管理界面 - Runway/Midjourney 风格 */}
+        {/* 剧本管理界面 */}
         {currentStep === 'script' && (
-          <div className="flex h-full bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white overflow-hidden">
-            {/* 左侧剧本列表 */}
-            <div className="w-80 border-r border-slate-700/50 bg-slate-900/50 backdrop-blur-xl flex flex-col">
-              {/* 搜索和创建区域 */}
-              <div className="p-4 border-b border-slate-700/50 space-y-3">
-                {/* 搜索框 */}
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={18} />
-                  <input
-                    type="text"
-                    placeholder="搜索剧本..."
-                    value={scriptSearchQuery}
-                    onChange={(e) => setScriptSearchQuery(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-800/50 border border-slate-700/50 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 text-sm"
-                  />
-                </div>
-                
-                {/* 创建新剧本按钮 */}
-                <button
-                  onClick={() => {
-                    setIsCreatingScript(true)
-                    setNewScriptTitle('')
-                    setNewScriptAuthor('')
-                  }}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-xl font-medium transition-all shadow-lg shadow-cyan-500/20"
-                >
-                  <Plus size={18} />
-                  创建新剧本
-                </button>
-              </div>
-
-              {/* 剧本列表 */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                {scripts
-                  .filter(script => 
-                    script.title.toLowerCase().includes(scriptSearchQuery.toLowerCase()) ||
-                    script.author.toLowerCase().includes(scriptSearchQuery.toLowerCase())
-                  )
-                  .map(script => (
-                    <div
-                      key={script.id}
-                      data-script-id={script.id}
-                      onClick={() => setSelectedScript(script)}
-                      className={`p-4 rounded-xl border cursor-pointer transition-all ${
-                        selectedScript?.id === script.id
-                          ? 'bg-gradient-to-r from-cyan-500/20 to-blue-500/20 border-cyan-500/50 shadow-lg shadow-cyan-500/10'
-                          : 'bg-slate-800/30 border-slate-700/50 hover:bg-slate-800/50 hover:border-slate-600/50'
-                      }`}
-                    >
-                      <h3 className="font-semibold text-white mb-1 line-clamp-1">{script.title}</h3>
-                      <div className="flex items-center justify-between text-xs text-slate-400">
-                        <span>{script.author}</span>
-                        <span>{script.scenes.length} 场景</span>
-                      </div>
-                      <div className="text-xs text-slate-500 mt-2">
-                        {new Date(script.createdAt).toLocaleDateString('zh-CN')}
-                      </div>
-                    </div>
-                  ))}
-                
-                {scripts.filter(script => 
-                  script.title.toLowerCase().includes(scriptSearchQuery.toLowerCase()) ||
-                  script.author.toLowerCase().includes(scriptSearchQuery.toLowerCase())
-                ).length === 0 && (
-                  <div className="text-center py-12 text-slate-400 text-sm">
-                    {scriptSearchQuery ? '未找到匹配的剧本' : '暂无剧本，点击上方按钮创建'}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* 右侧编辑器 */}
-            <div className="flex-1 flex flex-col overflow-hidden">
-              {selectedScript ? (
-                <>
-                  {/* AI 扩写区域 */}
-                  <div className="p-4 border-b border-slate-700/50 bg-slate-900/40 backdrop-blur-xl">
-                    <div className="max-w-4xl mx-auto">
-                      <div className="flex items-center gap-3 mb-3">
-                        <SparklesIcon className="text-cyan-400" size={20} />
-                        <h3 className="text-sm font-semibold text-slate-300">AI 智能扩写 (Google Gemini)</h3>
-                      </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={aiPrompt}
-                          onChange={(e) => setAiPrompt(e.target.value)}
-                          placeholder="输入故事梗概，例如：一个小男孩在森林里发现了一只发光的猫..."
-                          className="flex-1 px-4 py-2.5 bg-slate-800/50 border border-slate-700/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 text-sm"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey && !isGenerating) {
-                              e.preventDefault()
-                              handleAIGenerate()
-                            }
-                          }}
-                        />
-                        <button
-                          onClick={handleAIGenerate}
-                          disabled={!aiPrompt.trim() || isGenerating}
-                          className="px-6 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed text-white rounded-xl font-medium transition-all flex items-center gap-2 shadow-lg shadow-cyan-500/20"
-                        >
-                          {isGenerating ? (
-                            <>
-                              <Loader2 size={16} className="animate-spin" />
-                              生成中...
-                            </>
-                          ) : (
-                            <>
-                              <SparklesIcon size={16} />
-                              AI 扩写
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 编辑器头部 */}
-                  <div className="p-6 border-b border-slate-700/50 bg-slate-900/30 backdrop-blur-xl">
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <h2 className="text-2xl font-bold text-white mb-1">{selectedScript.title}</h2>
-                        <div className="flex items-center gap-4 text-sm text-slate-400">
-                          <span>作者: {selectedScript.author}</span>
-                          <span>•</span>
-                          <span>{selectedScript.scenes.length} 个场景</span>
-                          <span>•</span>
-                          <span>总时长: {selectedScript.scenes.reduce((sum, s) => sum + s.duration, 0).toFixed(1)} 秒</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          onClick={handleBatchGenerateStoryboards}
-                          disabled={isBatchGenerating || !selectedScript || selectedScript.scenes.length === 0}
-                          variant="primary"
-                          size="md"
-                          icon={isBatchGenerating ? Loader2 : Sparkles}
-                          className="bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600"
-                        >
-                          {isBatchGenerating ? '批量生成中...' : '批量生成分镜'}
-                        </Button>
-                        <button
-                          onClick={() => {
-                            // 保存逻辑：将当前选中的剧本更新到 scripts 数组
-                            setScripts(prev => prev.map(s => s.id === selectedScript.id ? selectedScript : s))
-                            // 显示保存成功提示（可选）
-                          }}
-                          className="px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-xl font-medium transition-all flex items-center gap-2"
-                        >
-                          <Save size={16} />
-                          保存
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (confirm('确定要删除这个剧本吗？')) {
-                              setScripts(prev => prev.filter(s => s.id !== selectedScript.id))
-                              setSelectedScript(null)
-                            }
-                          }}
-                          className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 rounded-xl font-medium transition-all flex items-center gap-2"
-                        >
-                          <Trash2 size={16} />
-                          删除
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 场景编辑器 */}
-                  <div className="flex-1 overflow-y-auto p-6">
-                    <div className="max-w-4xl mx-auto space-y-6">
-                      {selectedScript.scenes.map((scene, index) => {
-                        const isEditing = editingSceneIndex === index
-                        const isRegenerating = regeneratingSceneIndex === index
-                        
-                        return (
-                          <div
-                            key={index}
-                            className="bg-slate-800/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-xl"
-                          >
-                            {/* 场景头部 */}
-                            <div className="flex items-center justify-between mb-4">
-                              <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-500 rounded-xl flex items-center justify-center font-bold text-white">
-                                  {scene.sceneNumber}
-                                </div>
-                                <div>
-                                  <h3 className="font-semibold text-white">场景 {scene.sceneNumber}</h3>
-                                  <div className="text-xs text-slate-400 flex items-center gap-3 mt-1">
-                                    <span>时长: {scene.duration}秒</span>
-                                    {scene.vfx_suggestion && (
-                                      <>
-                                        <span>•</span>
-                                        <span className="text-cyan-400">{scene.vfx_suggestion}</span>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {/* 手动编辑按钮 */}
-                                <button
-                                  onClick={() => {
-                                    if (isEditing) {
-                                      setEditingSceneIndex(null)
-                                    } else {
-                                      setEditingSceneIndex(index)
-                                    }
-                                  }}
-                                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-                                    isEditing
-                                      ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
-                                      : 'bg-slate-700/50 text-slate-300 hover:bg-slate-700 border border-slate-600/50'
-                                  }`}
-                                >
-                                  <Edit3 size={14} />
-                                  {isEditing ? '完成编辑' : '手动编辑'}
-                                </button>
-                                
-                                {/* 重新生成按钮 */}
-                                <button
-                                  onClick={() => handleRegenerateScene(index)}
-                                  disabled={isRegenerating}
-                                  className="px-3 py-1.5 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 hover:from-cyan-500/30 hover:to-blue-500/30 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm font-medium transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  {isRegenerating ? (
-                                    <>
-                                      <Loader2 size={14} className="animate-spin" />
-                                      生成中...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <RefreshCw size={14} />
-                                      重新生成
-                                    </>
-                                  )}
-                                </button>
-                                
-                                {/* 删除按钮 */}
-                                <button
-                                  onClick={() => {
-                                    if (confirm('确定要删除这个场景吗？')) {
-                                      const updatedScenes = selectedScript.scenes.filter((_, i) => i !== index)
-                                      const updatedScript = {
-                                        ...selectedScript,
-                                        scenes: updatedScenes.map((s, i) => ({ ...s, sceneNumber: i + 1 }))
-                                      }
-                                      setSelectedScript(updatedScript)
-                                      // 同步更新到 scripts 数组
-                                      setScripts(prev => prev.map(s => s.id === updatedScript.id ? updatedScript : s))
-                                    }
-                                  }}
-                                  className="p-2 hover:bg-red-500/20 text-red-400 rounded-lg transition-all"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* 场景卡片内容 - 展示模式 */}
-                            {!isEditing ? (
-                              <>
-                                {/* 生成进度条 */}
-                                {isBatchGenerating && sceneGenerationProgress[scene.sceneNumber] !== undefined && (
-                                  <div className="mb-4">
-                                    <div className="flex items-center justify-between mb-2">
-                                      <span className="text-xs font-medium text-slate-300">生成进度</span>
-                                      <span className="text-xs text-slate-400">
-                                        {sceneGenerationProgress[scene.sceneNumber] === -1 
-                                          ? '生成失败' 
-                                          : sceneGenerationProgress[scene.sceneNumber] === 100
-                                          ? '已完成'
-                                          : `${Math.round(sceneGenerationProgress[scene.sceneNumber] || 0)}%`}
-                                      </span>
-                                    </div>
-                                    <div className="w-full bg-[#F5F5F7] rounded-full h-2.5 overflow-hidden border border-[#E5E5E5]">
-                                      <div
-                                        className={`h-2.5 rounded-full transition-all duration-300 ease-out ${
-                                          sceneGenerationProgress[scene.sceneNumber] === -1
-                                            ? 'bg-red-500'
-                                            : sceneGenerationProgress[scene.sceneNumber] === 100
-                                            ? 'bg-green-500'
-                                            : 'bg-[#000000]'
-                                        }`}
-                                        style={{ 
-                                          width: sceneGenerationProgress[scene.sceneNumber] === -1 
-                                            ? '100%' 
-                                            : `${Math.max(0, Math.min(100, sceneGenerationProgress[scene.sceneNumber] || 0))}%` 
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* 生成的分镜图片 */}
-                                {scene.imageUrl && (
-                                  <div className="mb-4">
-                                    <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
-                                      <Image size={16} />
-                                      分镜图
-                                    </label>
-                                    <div className="relative rounded-xl overflow-hidden border border-slate-700/50 bg-slate-900/30">
-                                      <img 
-                                        src={scene.imageUrl} 
-                                        alt={`场景 ${scene.sceneNumber} 分镜图`}
-                                        className="w-full h-auto object-cover"
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* 生成进度条 */}
-                                {isBatchGenerating && sceneGenerationProgress[scene.sceneNumber] !== undefined && (
-                                  <div className="mb-4">
-                                    <div className="flex items-center justify-between mb-2">
-                                      <span className="text-xs font-medium text-slate-300">生成进度</span>
-                                      <span className="text-xs text-slate-400">
-                                        {sceneGenerationProgress[scene.sceneNumber] === -1 
-                                          ? '生成失败' 
-                                          : sceneGenerationProgress[scene.sceneNumber] === 100
-                                          ? '已完成'
-                                          : `${Math.round(sceneGenerationProgress[scene.sceneNumber] || 0)}%`}
-                                      </span>
-                                    </div>
-                                    <div className="w-full bg-[#F5F5F7] rounded-full h-2.5 overflow-hidden border border-[#E5E5E5]">
-                                      <div
-                                        className={`h-2.5 rounded-full transition-all duration-300 ease-out ${
-                                          sceneGenerationProgress[scene.sceneNumber] === -1
-                                            ? 'bg-red-500'
-                                            : sceneGenerationProgress[scene.sceneNumber] === 100
-                                            ? 'bg-green-500'
-                                            : 'bg-[#000000]'
-                                        }`}
-                                        style={{ 
-                                          width: sceneGenerationProgress[scene.sceneNumber] === -1 
-                                            ? '100%' 
-                                            : `${Math.max(0, Math.min(100, sceneGenerationProgress[scene.sceneNumber] || 0))}%` 
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* 生成的分镜图片 */}
-                                {scene.imageUrl && (
-                                  <div className="mb-4">
-                                    <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
-                                      <Image size={16} />
-                                      分镜图
-                                    </label>
-                                    <div className="relative rounded-xl overflow-hidden border border-slate-700/50 bg-slate-900/30">
-                                      <img 
-                                        src={scene.imageUrl} 
-                                        alt={`场景 ${scene.sceneNumber} 分镜图`}
-                                        className="w-full h-auto object-cover"
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-
-                                {/* 画面描述 (Visual) */}
-                                <div className="mb-4">
-                                  <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
-                                    <Image size={16} />
-                                    画面描述 (Visual)
-                                  </label>
-                                  <div className="px-4 py-3 bg-slate-900/30 border border-slate-700/30 rounded-xl text-white text-sm min-h-[60px]">
-                                    {scene.content || <span className="text-slate-500 italic">暂无描述</span>}
-                                  </div>
-                                </div>
-
-                                {/* 对白 (Dialogue) */}
-                                <div className="mb-4">
-                                  <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
-                                    <Volume2 size={16} />
-                                    对白 (Dialogue)
-                                  </label>
-                                  <div className="px-4 py-3 bg-slate-900/30 border border-slate-700/30 rounded-xl text-white text-sm min-h-[50px]">
-                                    {scene.dialogue || <span className="text-slate-500 italic">暂无对白</span>}
-                                  </div>
-                                </div>
-                              </>
-                            ) : (
-                              <>
-                                {/* 编辑模式 - 画面描述 */}
-                                <div className="mb-4">
-                                  <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
-                                    <Image size={16} />
-                                    画面描述 (Visual)
-                                  </label>
-                                  <textarea
-                                    value={scene.content}
-                                    onChange={(e) => {
-                                      const updatedScenes = [...selectedScript.scenes]
-                                      updatedScenes[index] = { ...updatedScenes[index], content: e.target.value }
-                                      const updatedScript = { ...selectedScript, scenes: updatedScenes }
-                                      setSelectedScript(updatedScript)
-                                      // 同步更新到 scripts 数组
-                                      setScripts(prev => prev.map(s => s.id === updatedScript.id ? updatedScript : s))
-                                    }}
-                                    placeholder="描述这个场景的视觉画面..."
-                                    className="w-full px-4 py-3 bg-slate-900/50 border border-cyan-500/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 resize-none"
-                                    rows={3}
-                                    autoFocus
-                                  />
-                                </div>
-
-                                {/* 编辑模式 - 对白 */}
-                                <div className="mb-4">
-                                  <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
-                                    <Volume2 size={16} />
-                                    对白 (Dialogue)
-                                  </label>
-                                  <textarea
-                                    value={scene.dialogue}
-                                    onChange={(e) => {
-                                      const updatedScenes = [...selectedScript.scenes]
-                                      updatedScenes[index] = { ...updatedScenes[index], dialogue: e.target.value }
-                                      const updatedScript = { ...selectedScript, scenes: updatedScenes }
-                                      setSelectedScript(updatedScript)
-                                      // 同步更新到 scripts 数组
-                                      setScripts(prev => prev.map(s => s.id === updatedScript.id ? updatedScript : s))
-                                    }}
-                                    placeholder="输入旁白或对白内容..."
-                                    className="w-full px-4 py-3 bg-slate-900/50 border border-cyan-500/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 resize-none"
-                                    rows={2}
-                                  />
-                                </div>
-                              </>
-                            )}
-
-                          {/* 特效建议和时长 */}
-                          <div className="grid grid-cols-2 gap-4 mt-4">
-                            <div>
-                              <label className="block text-sm font-medium text-slate-300 mb-2">特效/运镜建议</label>
-                              <input
-                                type="text"
-                                value={scene.vfx_suggestion}
-                                onChange={(e) => {
-                                  const updatedScenes = [...selectedScript.scenes]
-                                  updatedScenes[index] = { ...updatedScenes[index], vfx_suggestion: e.target.value }
-                                  const updatedScript = { ...selectedScript, scenes: updatedScenes }
-                                  setSelectedScript(updatedScript)
-                                  // 同步更新到 scripts 数组
-                                  setScripts(prev => prev.map(s => s.id === updatedScript.id ? updatedScript : s))
-                                }}
-                                placeholder="如：推镜头、低头视角"
-                                className="w-full px-4 py-2 bg-slate-900/50 border border-slate-700/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 text-sm"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-sm font-medium text-slate-300 mb-2">预计时长（秒）</label>
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.1"
-                                value={scene.duration}
-                                onChange={(e) => {
-                                  const updatedScenes = [...selectedScript.scenes]
-                                  updatedScenes[index] = { ...updatedScenes[index], duration: parseFloat(e.target.value) || 0 }
-                                  const updatedScript = { ...selectedScript, scenes: updatedScenes }
-                                  setSelectedScript(updatedScript)
-                                  // 同步更新到 scripts 数组
-                                  setScripts(prev => prev.map(s => s.id === updatedScript.id ? updatedScript : s))
-                                }}
-                                className="w-full px-4 py-2 bg-slate-900/50 border border-slate-700/50 rounded-xl text-white focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20 text-sm"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )
-                      })}
-
-                      {/* 添加新场景按钮 */}
-                      <button
-                        onClick={() => {
-                          const newSceneNumber = selectedScript.scenes.length + 1
-                          const newScene: Scene = {
-                            sceneNumber: newSceneNumber,
-                            content: '',
-                            dialogue: '',
-                            vfx_suggestion: '',
-                            duration: 5.0
-                          }
-                          const updatedScript = {
-                            ...selectedScript,
-                            scenes: [...selectedScript.scenes, newScene]
-                          }
-                          setSelectedScript(updatedScript)
-                          // 同步更新到 scripts 数组
-                          setScripts(prev => prev.map(s => s.id === updatedScript.id ? updatedScript : s))
-                        }}
-                        className="w-full py-4 border-2 border-dashed border-slate-700/50 hover:border-cyan-500/50 rounded-2xl text-slate-400 hover:text-cyan-400 transition-all flex items-center justify-center gap-2 font-medium"
-                      >
-                        <Plus size={20} />
-                        添加新场景
-                      </button>
-
-                      {/* 一键生成分镜图按钮 */}
-                      {selectedScript.scenes.length > 0 && (
-                        <button
-                          onClick={() => {
-                            // 提取当前剧本的所有 scenes 数组
-                            const scenesData = selectedScript.scenes
-                            
-                            // 保存到 localStorage
-                            try {
-                              const dataToSave = {
-                                scriptId: selectedScript.id,
-                                scriptTitle: selectedScript.title,
-                                scenes: scenesData,
-                                timestamp: new Date().toISOString(),
-                              }
-                              localStorage.setItem('pending_storyboard_data', JSON.stringify(dataToSave))
-                              
-                              // 跳转到分镜图模块
-                              setCurrentStep('storyboard')
-                            } catch (error) {
-                              alert('保存数据失败，请重试')
-                            }
-                          }}
-                          className="w-full py-4 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-2xl font-bold text-lg transition-all shadow-lg shadow-cyan-500/30 flex items-center justify-center gap-3 mt-4"
-                        >
-                          <LayoutGrid size={24} />
-                          一键生成分镜图
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-slate-400">
-                  <div className="text-center">
-                    <ScrollText size={64} className="mx-auto mb-4 text-slate-600" />
-                    <p className="text-lg">选择一个剧本开始编辑</p>
-                    <p className="text-sm mt-2">或点击左侧按钮创建新剧本</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* 创建新剧本 Modal */}
-        {isCreatingScript && (
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-xl flex items-center justify-center z-50 p-4">
-            <div className="bg-slate-800/95 backdrop-blur-2xl border border-slate-700/50 w-full max-w-md rounded-2xl p-6 shadow-2xl">
-              <h2 className="text-2xl font-bold mb-6 text-white">创建新剧本</h2>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">剧本标题</label>
-                  <input
-                    type="text"
-                    value={newScriptTitle}
-                    onChange={(e) => setNewScriptTitle(e.target.value)}
-                    placeholder="输入剧本标题..."
-                    className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-2">作者</label>
-                  <input
-                    type="text"
-                    value={newScriptAuthor}
-                    onChange={(e) => setNewScriptAuthor(e.target.value)}
-                    placeholder="输入作者名称..."
-                    className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 focus:ring-2 focus:ring-cyan-500/20"
-                  />
-                </div>
-                <div className="flex gap-3 pt-2">
-                  <button
-                    onClick={() => {
-                      setIsCreatingScript(false)
-                      setNewScriptTitle('')
-                      setNewScriptAuthor('')
-                    }}
-                    className="flex-1 px-4 py-3 bg-slate-700/50 hover:bg-slate-700 text-white rounded-xl font-medium transition-all"
-                  >
-                    取消
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (newScriptTitle.trim() && newScriptAuthor.trim()) {
-                        const newScript: Script = {
-                          id: `script-${Date.now()}`,
-                          title: newScriptTitle.trim(),
-                          author: newScriptAuthor.trim(),
-                          createdAt: new Date(),
-                          scenes: []
-                        }
-                        setScripts(prev => [...prev, newScript])
-                        setSelectedScript(newScript)
-                        setIsCreatingScript(false)
-                        setNewScriptTitle('')
-                        setNewScriptAuthor('')
-                      }
-                    }}
-                    className="flex-1 px-4 py-3 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-xl font-medium transition-all"
-                  >
-                    创建
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <ScriptManagement
+            currentProjectId={currentProjectId}
+            scripts={scripts}
+            setScripts={setScripts}
+            onNavigateToOverview={() => setCurrentStep('overview')}
+            onNavigateToStoryboard={() => setCurrentStep('storyboard')}
+            syncExtractedAssets={syncExtractedAssets}
+            renderTextWithAssetTags={renderTextWithAssetTags}
+            buildEnhancedPrompt={buildEnhancedPrompt}
+            handleBatchGenerateStoryboards={handleBatchGenerateStoryboards}
+            isBatchGenerating={isBatchGenerating}
+            sceneGenerationProgress={sceneGenerationProgress}
+          />
         )}
 
         {/* 视频生成界面 */}
@@ -3695,51 +3391,76 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 分镜列表预览 */}
+              {/* 分镜列表预览 - 从 localStorage 读取 */}
               <div className="bg-white/90 backdrop-blur-xl rounded-2xl border border-gray-300/50 p-6 shadow-lg">
                 <h2 className="text-xl font-bold text-gray-900 mb-4">分镜列表</h2>
                 
                 <div className="space-y-4">
-                  {storyboards.map((storyboard, index) => {
-                    const character = storyboard.characterId 
-                      ? assets.find(a => a.id === storyboard.characterId)
-                      : null
-                    const scene = storyboard.sceneId
-                      ? mockScenes.find(s => s.id === storyboard.sceneId)
-                      : null
+                  {(() => {
+                    // 从 localStorage 读取分镜数据
+                    if (typeof window === 'undefined') return null
+                    try {
+                      const stored = localStorage.getItem('ai-video-platform-storyboards')
+                      if (!stored) return <div className="text-sm text-gray-500 text-center py-4">暂无分镜数据</div>
+                      
+                      const storyboards: StoryboardItem[] = JSON.parse(stored)
+                      const projectStoryboards = storyboards.filter(sb => sb.projectId === currentProjectId)
+                      
+                      if (projectStoryboards.length === 0) {
+                        return <div className="text-sm text-gray-500 text-center py-4">暂无分镜数据</div>
+                      }
+                      
+                      return projectStoryboards.map((storyboard: StoryboardItem, index: number) => {
+                        // 支持多个角色：获取所有选中的角色
+                        const store = useAssetStore.getState()
+                        const allAssets = [
+                          ...store.getAssetsByCategory(AssetCategory.CHARACTER),
+                          ...store.getAssetsByCategory(AssetCategory.PROP),
+                          ...store.getAssetsByCategory(AssetCategory.SCENE),
+                        ]
+                        const characters = storyboard.characterIds
+                          .map((id: string) => allAssets.find((a: any) => a.id === id))
+                          .filter((a): a is NonNullable<typeof a> => a !== undefined)
+                        const scene = storyboard.sceneId
+                          ? mockScenes.find(s => s.id === storyboard.sceneId)
+                          : null
 
-                    return (
-                      <div
-                        key={storyboard.id}
-                        className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl border border-gray-200"
-                      >
-                        <div className="w-24 h-16 bg-gradient-to-br from-cyan-100 to-purple-100 rounded-lg flex items-center justify-center border border-gray-200">
-                          <span className="text-sm font-semibold text-gray-600">#{index + 1}</span>
-                        </div>
-                        
-                        <div className="flex-1">
-                          <div className="flex items-center gap-4 text-sm">
-                            <span className="text-gray-600">
-                              <span className="font-medium">角色:</span> {character?.name || '未选择'}
-                            </span>
-                            <span className="text-gray-600">
-                              <span className="font-medium">场景:</span> {scene?.name || '未选择'}
-                            </span>
-                            <span className={`px-2 py-1 rounded text-xs font-medium ${
-                              storyboard.status !== 'pending'
-                                ? 'bg-green-100 text-green-700'
-                                : 'bg-yellow-100 text-yellow-700'
-                            }`}>
-                              {storyboard.status !== 'pending'
-                                ? '就绪' 
-                                : '待处理'}
-                            </span>
+                        return (
+                          <div
+                            key={storyboard.id}
+                            className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl border border-gray-200"
+                          >
+                            <div className="w-24 h-16 bg-gradient-to-br from-cyan-100 to-purple-100 rounded-lg flex items-center justify-center border border-gray-200">
+                              <span className="text-sm font-semibold text-gray-600">#{index + 1}</span>
+                            </div>
+                            
+                            <div className="flex-1">
+                              <div className="flex items-center gap-4 text-sm">
+                                <span className="text-gray-600">
+                                  <span className="font-medium">角色:</span> {characters.length > 0 ? characters.map((c: any) => c.name).join(', ') : '未选择'}
+                                </span>
+                                <span className="text-gray-600">
+                                  <span className="font-medium">场景:</span> {scene?.name || '未选择'}
+                                </span>
+                                <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                  storyboard.status !== 'pending'
+                                    ? 'bg-green-100 text-green-700'
+                                    : 'bg-yellow-100 text-yellow-700'
+                                }`}>
+                                  {storyboard.status !== 'pending'
+                                    ? '就绪' 
+                                    : '待处理'}
+                                </span>
+                              </div>
+                              <p className="text-xs text-gray-500 mt-1 line-clamp-1">{storyboard.dialogue}</p>
+                            </div>
                           </div>
-                          <p className="text-xs text-gray-500 mt-1 line-clamp-1">{storyboard.dialogue}</p>
-                        </div>
-                      </div>
-                    )
-                  })}
+                        )
+                      })
+                    } catch {
+                      return <div className="text-sm text-gray-500 text-center py-4">加载分镜数据失败</div>
+                    }
+                  })()}
                 </div>
               </div>
 
@@ -3778,8 +3499,7 @@ export default function App() {
             </div>
           </div>
         )}
-      </main>
-      
+
       {/* Toast 提示 - 资产同步成功（全局显示） */}
       {toastVisible && toastMessage && (
         <div 
@@ -3808,6 +3528,327 @@ export default function App() {
           </button>
         </div>
       )}
+
+      {/* 资产编辑侧边栏 */}
+      {isAssetSidebarOpen && (
+        <>
+          {/* 背景遮罩 */}
+          <div
+            className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40 transition-opacity duration-300"
+            onClick={() => setIsAssetSidebarOpen(false)}
+          />
+          
+          {/* 侧边栏 */}
+          <div
+            className={`fixed right-0 top-0 h-full w-full max-w-md bg-white shadow-2xl z-50 transform transition-transform duration-300 ease-out ${
+              isAssetSidebarOpen ? 'translate-x-0' : 'translate-x-full'
+            }`}
+          >
+            <div className="flex flex-col h-full">
+              {/* 侧边栏头部 */}
+              <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                <h2 className="text-xl font-bold text-gray-900">编辑资产</h2>
+                <button
+                  onClick={() => setIsAssetSidebarOpen(false)}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                  aria-label="关闭"
+                >
+                  <X size={20} className="text-gray-600" />
+                </button>
+              </div>
+              
+              {/* 侧边栏内容 */}
+              <div className="flex-1 overflow-y-auto p-6">
+                {sidebarAssetId && sidebarAssetType && (
+                  <>
+                    {/* 角色编辑 */}
+                    {sidebarAssetType === 'character' && (() => {
+                      const character = storeCharacters.find(c => c.id === sidebarAssetId)
+                      if (!character) return <div className="text-gray-500">资产不存在</div>
+                      
+                      // 试听 TTS 的函数
+                      const handlePreviewVoice = async () => {
+                        setIsPlayingCharacterVoice(true)
+                        try {
+                          const testText = `你好，我是${editingName || character.name}的声音`
+                          
+                          const response = await fetch('/api/tts', {
+                            method: 'POST',
+                            headers: {
+                              'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                              text: testText,
+                              voiceId: editingCharacterVoiceId,
+                              model: 'tts-1',
+                            }),
+                          })
+
+                          if (!response.ok) {
+                            const errorData = await response.json().catch(() => ({}))
+                            throw new Error(errorData.error || 'TTS 生成失败')
+                          }
+
+                          const audioBlob = await response.blob()
+                          const audioUrl = URL.createObjectURL(audioBlob)
+                          const audio = new Audio(audioUrl)
+                          
+                          audio.onended = () => {
+                            setIsPlayingCharacterVoice(false)
+                            URL.revokeObjectURL(audioUrl)
+                          }
+                          
+                          audio.onerror = () => {
+                            setIsPlayingCharacterVoice(false)
+                            URL.revokeObjectURL(audioUrl)
+                            alert('音频播放失败')
+                          }
+                          
+                          await audio.play()
+                        } catch (error: any) {
+                          console.error('TTS 试听失败:', error)
+                          setIsPlayingCharacterVoice(false)
+                          alert(error.message || 'TTS 试听失败，请检查 API 配置')
+                        }
+                      }
+                      
+                      return (
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">角色名称</label>
+                            <Input
+                              type="text"
+                              value={editingName}
+                              onChange={(e) => setEditingName(e.target.value)}
+                              className="w-full"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">角色描述</label>
+                            <Textarea
+                              value={editingDescription}
+                              onChange={(e) => setEditingDescription(e.target.value)}
+                              className="w-full"
+                              rows={5}
+                              placeholder="输入角色描述..."
+                            />
+                          </div>
+                          
+                          {/* 语音选择器 */}
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              语音音色
+                            </label>
+                            <div className="flex gap-2">
+                              <select
+                                value={editingCharacterVoiceId}
+                                onChange={(e) => setEditingCharacterVoiceId(e.target.value)}
+                                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                              >
+                                {openAIVoiceOptions.map((voice) => (
+                                  <option key={voice.id} value={voice.id}>
+                                    {voice.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={handlePreviewVoice}
+                                disabled={isPlayingCharacterVoice}
+                                className="px-4 py-2 bg-cyan-500 hover:bg-cyan-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center gap-2"
+                                title="试听语音"
+                              >
+                                {isPlayingCharacterVoice ? (
+                                  <>
+                                    <Loader2 size={16} className="animate-spin" />
+                                    <span className="text-sm">播放中</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Volume2 size={16} />
+                                    <span className="text-sm">试听</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1">
+                              {openAIVoiceOptions.find(v => v.id === editingCharacterVoiceId)?.description || ''}
+                            </p>
+                          </div>
+                          
+                          <div className="flex gap-2">
+                            <Button
+                              onClick={() => {
+                                updateCharacter(sidebarAssetId, {
+                                  name: editingName,
+                                  description: editingDescription,
+                                  voiceId: editingCharacterVoiceId, // 资产隔离：保存 voiceId 到角色模型
+                                })
+                                setIsAssetSidebarOpen(false)
+                                setSidebarAssetId(null)
+                                setSidebarAssetType(null)
+                              }}
+                              variant="primary"
+                              fullWidth
+                            >
+                              保存
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                setIsAssetSidebarOpen(false)
+                                setSidebarAssetId(null)
+                                setSidebarAssetType(null)
+                              }}
+                              variant="secondary"
+                            >
+                              取消
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })()}
+                    
+                    {/* 道具编辑 */}
+                    {sidebarAssetType === 'prop' && (() => {
+                      const prop = storeProps.find(p => p.id === sidebarAssetId)
+                      if (!prop) return <div className="text-gray-500">资产不存在</div>
+                      
+                      return (
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">道具名称</label>
+                            <Input
+                              type="text"
+                              value={editingName}
+                              onChange={(e) => setEditingName(e.target.value)}
+                              className="w-full"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">视觉细节</label>
+                            <Textarea
+                              value={editingDescription}
+                              onChange={(e) => setEditingDescription(e.target.value)}
+                              className="w-full"
+                              rows={5}
+                              placeholder="输入道具的视觉细节..."
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              onClick={() => {
+                                updateProp(sidebarAssetId, {
+                                  name: editingName,
+                                  visualDetails: editingDescription,
+                                })
+                                setIsAssetSidebarOpen(false)
+                                setSidebarAssetId(null)
+                                setSidebarAssetType(null)
+                              }}
+                              variant="primary"
+                              fullWidth
+                            >
+                              保存
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                setIsAssetSidebarOpen(false)
+                                setSidebarAssetId(null)
+                                setSidebarAssetType(null)
+                              }}
+                              variant="secondary"
+                            >
+                              取消
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })()}
+                    
+                    {/* 场景编辑 */}
+                    {sidebarAssetType === 'scene' && (() => {
+                      const scene = storeScenes.find(s => s.id === sidebarAssetId)
+                      if (!scene) return <div className="text-gray-500">资产不存在</div>
+                      
+                      return (
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">场景名称</label>
+                            <Input
+                              type="text"
+                              value={editingName}
+                              onChange={(e) => setEditingName(e.target.value)}
+                              className="w-full"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">场景描述</label>
+                            <Textarea
+                              value={editingDescription}
+                              onChange={(e) => setEditingDescription(e.target.value)}
+                              className="w-full"
+                              rows={5}
+                              placeholder="输入场景描述..."
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              onClick={() => {
+                                updateScene(sidebarAssetId, {
+                                  name: editingName,
+                                  description: editingDescription,
+                                })
+                                setIsAssetSidebarOpen(false)
+                                setSidebarAssetId(null)
+                                setSidebarAssetType(null)
+                              }}
+                              variant="primary"
+                              fullWidth
+                            >
+                              保存
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                setIsAssetSidebarOpen(false)
+                                setSidebarAssetId(null)
+                                setSidebarAssetType(null)
+                              }}
+                              variant="secondary"
+                            >
+                              取消
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+      </motion.div>
+    </AnimatePresence>
+  </main>
+  </div>
+
+  {/* 右下角环境指示器 - 只有在挂载后才渲染 */}
+  {mounted && currentProject && (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.8 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="fixed bottom-6 right-6 z-40"
+    >
+      <div className="px-4 py-2.5 bg-white/80 backdrop-blur-xl rounded-xl border border-gray-200/50 shadow-lg flex items-center gap-3">
+        <div className="w-2 h-2 bg-cyan-500 rounded-full animate-pulse" />
+        <div className="text-sm font-medium text-gray-700" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif' }}>
+          <span className="text-gray-600">{currentProject?.artStyle || '未设置'}</span>
+          <span className="mx-2 text-gray-400">|</span>
+          <span className="text-gray-600">{currentProject?.culturalBackground || '未设置'}</span>
+        </div>
+      </div>
+    </motion.div>
+  )}
     </div>
   )
 }

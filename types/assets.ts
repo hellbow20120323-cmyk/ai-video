@@ -32,6 +32,8 @@ export interface Asset {
   referenceImageUrl?: string | null
   /** 创建时间 */
   createdAt: string | Date
+  /** 所属项目 ID */
+  projectId: string | null
 }
 
 /**
@@ -44,8 +46,12 @@ export interface Character {
   name: string
   /** 角色外貌特征描述 */
   description: string
+  /** 语音音色 ID（OpenAI TTS 音色：alloy, echo, fable, onyx, nova, shimmer） */
+  voiceId?: string | null
   /** 创建时间 */
   createdAt: string | Date
+  /** 所属项目 ID */
+  projectId: string | null
 }
 
 /**
@@ -60,6 +66,8 @@ export interface Prop {
   visualDetails: string
   /** 创建时间 */
   createdAt: string | Date
+  /** 所属项目 ID */
+  projectId: string | null
 }
 
 /**
@@ -74,6 +82,8 @@ export interface Scene {
   description: string
   /** 创建时间 */
   createdAt: string | Date
+  /** 所属项目 ID */
+  projectId: string | null
 }
 
 /**

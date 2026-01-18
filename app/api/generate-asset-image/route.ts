@@ -64,12 +64,13 @@ export async function POST(request: NextRequest) {
       aspectRatio = '1:1' // 道具使用正方形
     }
     
-    // 创建生成任务，传递参考图像 ID（如果提供）
+    // 创建生成任务，传递参考图像 ID 和资产类别（如果提供）
     const task = await generateImage({
       prompt,
       aspect_ratio: aspectRatio,
       negative_prompt: 'low quality, blurry, distorted, watermark, text overlay',
-      reference_image_id: reference_image_id || undefined // 传递参考图像 ID 确保角色一致性
+      reference_image_id: reference_image_id || undefined, // 传递参考图像 ID 确保角色一致性
+      category: category as 'character' | 'scene' | 'prop' // 传递资产类别，用于选择占位图
     })
     
     // 立即返回任务 ID，让前端进行异步轮询

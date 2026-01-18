@@ -6,6 +6,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { Character, Prop, Scene, Theme, StoryAssets, Asset, AssetCategory } from '@/types/assets'
+import { useProjectStore } from './useProjectStore'
 
 interface AssetStore {
   // 状态
@@ -17,9 +18,9 @@ interface AssetStore {
   assets: Asset[]
 
   // Actions
-  addCharacter: (character: Omit<Character, 'id' | 'createdAt'>) => void
-  addProp: (prop: Omit<Prop, 'id' | 'createdAt'>) => void
-  addScene: (scene: Omit<Scene, 'id' | 'createdAt'>) => void
+  addCharacter: (character: Omit<Character, 'id' | 'createdAt' | 'projectId'>) => void
+  addProp: (prop: Omit<Prop, 'id' | 'createdAt' | 'projectId'>) => void
+  addScene: (scene: Omit<Scene, 'id' | 'createdAt' | 'projectId'>) => void
   setTheme: (theme: Theme) => void
   
   // 批量添加资产
@@ -39,8 +40,8 @@ interface AssetStore {
   clearAll: () => void
 
   // 统一的资产管理方法（新增）
-  /** 同步资产数组，自动去重并保存到 localStorage */
-  syncAssets: (newAssets: Asset[]) => void
+  /** 同步资产数组，自动去重并保存到 localStorage。如果资产已存在（基于名称+类别），则更新描述；不存在则新增。返回统计信息。 */
+  syncAssets: (newAssets: Asset[]) => { addedCount: number; updatedCount: number }
   /** 根据类别获取资产 */
   getAssetsByCategory: (category: AssetCategory) => Asset[]
 }
@@ -103,6 +104,9 @@ export const useAssetStore = create<AssetStore>()(
           return // 如果已存在，不添加
         }
         
+        // 获取当前项目 ID
+        const currentProjectId = useProjectStore.getState().currentProjectId
+        
         set({
           characters: [
             ...characters,
@@ -110,6 +114,7 @@ export const useAssetStore = create<AssetStore>()(
               ...character,
               id: generateId(),
               createdAt: new Date(),
+              projectId: currentProjectId,
             },
           ],
         })
@@ -123,6 +128,9 @@ export const useAssetStore = create<AssetStore>()(
           return // 如果已存在，不添加
         }
         
+        // 获取当前项目 ID
+        const currentProjectId = useProjectStore.getState().currentProjectId
+        
         set({
           props: [
             ...props,
@@ -130,6 +138,7 @@ export const useAssetStore = create<AssetStore>()(
               ...prop,
               id: generateId(),
               createdAt: new Date(),
+              projectId: currentProjectId,
             },
           ],
         })
@@ -143,6 +152,9 @@ export const useAssetStore = create<AssetStore>()(
           return // 如果已存在，不添加
         }
         
+        // 获取当前项目 ID
+        const currentProjectId = useProjectStore.getState().currentProjectId
+        
         set({
           scenes: [
             ...scenes,
@@ -150,6 +162,7 @@ export const useAssetStore = create<AssetStore>()(
               ...scene,
               id: generateId(),
               createdAt: new Date(),
+              projectId: currentProjectId,
             },
           ],
         })
@@ -164,6 +177,9 @@ export const useAssetStore = create<AssetStore>()(
       addAssetsFromStory: (assets) => {
         const { characters, props, scenes } = get()
         
+        // 获取当前项目 ID
+        const currentProjectId = useProjectStore.getState().currentProjectId
+        
         // 添加角色（去重）
         const newCharacters: Character[] = []
         assets.characters.forEach((char) => {
@@ -173,6 +189,7 @@ export const useAssetStore = create<AssetStore>()(
               name: char.name,
               description: char.description,
               createdAt: new Date(),
+              projectId: currentProjectId,
             })
           }
         })
@@ -187,6 +204,7 @@ export const useAssetStore = create<AssetStore>()(
               // 兼容新格式（description）和旧格式（visualDetails）
               visualDetails: prop.description || (prop as any).visualDetails || '',
               createdAt: new Date(),
+              projectId: currentProjectId,
             })
           }
         })
@@ -200,6 +218,7 @@ export const useAssetStore = create<AssetStore>()(
               name: scene.name,
               description: scene.description,
               createdAt: new Date(),
+              projectId: currentProjectId,
             })
           }
         })
@@ -283,16 +302,26 @@ export const useAssetStore = create<AssetStore>()(
       },
 
       // 同步资产数组，自动去重并保存
+      // 如果资产已存在（基于名称+类别），则更新描述；不存在则新增
       syncAssets: (newAssets) => {
         const { assets: existingAssets } = get()
         const mergedAssets: Asset[] = [...existingAssets]
+        let addedCount = 0
+        let updatedCount = 0
+
+        // 获取当前项目 ID
+        const currentProjectId = useProjectStore.getState().currentProjectId
 
         // 遍历新资产，去重并合并
         newAssets.forEach((newAsset) => {
-          // 检查是否已存在（基于 ID 或 名称+类别）
-          const exists = assetExists(mergedAssets, newAsset)
+          // 检查是否已存在（基于名称+类别）
+          const existingIndex = mergedAssets.findIndex(
+            (a) =>
+              a.name.toLowerCase().trim() === newAsset.name.toLowerCase().trim() &&
+              a.category === newAsset.category
+          )
 
-          if (!exists) {
+          if (existingIndex === -1) {
             // 如果不存在，添加新资产
             mergedAssets.push({
               ...newAsset,
@@ -300,29 +329,30 @@ export const useAssetStore = create<AssetStore>()(
               id: newAsset.id || generateId(),
               // 确保有创建时间
               createdAt: newAsset.createdAt || new Date(),
+              // 自动关联当前项目
+              projectId: currentProjectId,
             })
+            addedCount++
           } else {
-            // 如果已存在，更新现有资产（保留原有 ID 和创建时间）
-            const existingIndex = mergedAssets.findIndex(
-              (a) =>
-                a.id === newAsset.id ||
-                (a.name.toLowerCase().trim() === newAsset.name.toLowerCase().trim() &&
-                  a.category === newAsset.category)
-            )
-            if (existingIndex !== -1) {
-              // 更新资产信息，但保留原有的 ID 和 createdAt
-              mergedAssets[existingIndex] = {
-                ...mergedAssets[existingIndex],
-                ...newAsset,
-                id: mergedAssets[existingIndex].id, // 保留原有 ID
-                createdAt: mergedAssets[existingIndex].createdAt, // 保留原有创建时间
-              }
+            // 如果已存在，更新描述（保留原有 ID 和创建时间）
+            mergedAssets[existingIndex] = {
+              ...mergedAssets[existingIndex],
+              visualDescription: newAsset.visualDescription, // 更新描述
+              // 保留原有的 ID 和 createdAt
+              id: mergedAssets[existingIndex].id,
+              createdAt: mergedAssets[existingIndex].createdAt,
+              // 如果原资产没有 projectId，则更新为当前项目
+              projectId: mergedAssets[existingIndex].projectId || currentProjectId,
             }
+            updatedCount++
           }
         })
 
         // 更新状态（会自动持久化到 localStorage）
         set({ assets: mergedAssets })
+        
+        // 返回统计信息
+        return { addedCount, updatedCount }
       },
 
       // 根据类别获取资产

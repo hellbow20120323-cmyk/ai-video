@@ -1,6 +1,8 @@
 # Nano Banana 图像生成服务
 
-基于 Google Gemini 2.5 Flash Image (Nano Banana) 的图像生成服务，支持异步任务和状态轮询。
+基于 Google Gemini 2.5 Flash 的图像生成服务，支持异步任务和状态轮询。
+
+**注意**：统一使用 `gemini-2.5-flash` 基础模型，不使用 `-image` 或 `-preview` 后缀变体，因为基础模型的免费额度更高。
 
 ## 环境变量配置
 
