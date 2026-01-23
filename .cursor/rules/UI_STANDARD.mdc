@@ -1,0 +1,23 @@
+---
+description: 强制执行 Apple 工业设计标准。适用于处理 React 组件、Tailwind 样式、Framer Motion 动画。
+globs: ["app/**/*.tsx", "components/**/*.tsx", "styles/**/*.css"]
+alwaysApply: false
+---
+
+核心原则：Apple 工业设计美学，模块化视图拆解。
+
+1. 视觉风格规范 (macOS/Apple Style)
+圆角标准：大容器使用 rounded-3xl (24px)，卡片/按钮使用 rounded-2xl (16px)。
+
+材质感：背景统一使用 bg-[#F5F5F7]。卡片使用毛玻璃效果 bg-white/70 backdrop-blur-xl border border-white/20。
+
+动画逻辑：必须引入 framer-motion。阶段切换使用 AnimatePresence 实现平滑的交叉淡入淡出（Opacity & Scale）。
+
+排版：优先使用系统默认字体栈（SF Pro Display/Text）。标题字间距调小 -0.02em。
+
+2. 结构开发约束
+严禁单体架构：单个 .tsx 文件禁止超过 250 行。
+
+Shell-View 模式：page.tsx 仅作为容器，包含 Sidebar 和根据 currentView 动态加载的模块组件。
+
+原子组件化：通用的 Button、Card、Input 必须存放在 src/components/shared/ 目录下。

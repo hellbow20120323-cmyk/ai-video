@@ -1,0 +1,29 @@
+---
+description: 核心状态机逻辑守则。适用于修改 useWorkflow 钩子、状态管理 store 或业务流程逻辑。
+globs: ["src/hooks/useWorkflow.ts", "src/store/**/*.ts", "app/api/**/*.ts"]
+alwaysApply: true
+---
+
+核心原则：受控状态机，强制人工干预。
+
+1. 状态定义 (Workflow States)
+必须在 useWorkflow.ts 钩子中维护以下唯一状态源：
+
+INPUT：灵感获取阶段。
+
+REVIEW：手动干预阶段（核心）。
+
+STAGING：数据暂存/保存阶段。
+
+GENERATING：视觉渲染阶段。
+
+2. 流转控制逻辑
+状态隔离：Gemini 生成的剧本初稿先进入 Local State。严禁在用户查看前直接写入 assets 表。
+
+强制保存节点：在 REVIEW 阶段，用户修改完资产描述后，必须点击“同步创意到云端”按钮，执行数据库写入操作。只有写入成功（返回 200）后，才激活“生成分镜”按钮。
+
+字数与语言约束：
+
+story_outline 强制要求中文输出。
+
+字数严格限制在 600 字内，UI 必须包含实时字数校验提醒。

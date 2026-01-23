@@ -1,0 +1,20 @@
+---
+description: AI 模型交互与输出限制标准。适用于修改 Gemini API 调用、Prompt 提示词模板、JSON 解析逻辑。
+globs: ["src/services/aiService.ts", "app/api/adapt-story/route.ts"]
+alwaysApply: true
+---
+
+
+核心原则：结构化输出，视觉描述增强。
+
+1. JSON 强约束
+强制 Schema：所有 Gemini 返回必须符合指定的 JSON 格式。
+
+语言锁定：story_outline 和资产描述必须强制输出为中文。
+
+字数硬约束：story_outline 严格限制在 600 字内。
+
+2. 视觉一致性策略
+描述词扩展：AI 提取资产时，必须自动附加风格后缀（例如：“粘土风格，高饱和度，皮克斯光影”）。
+
+角色锁定：要求 AI 为每个角色生成固定的特征描述符（如：始终穿着特定的条纹毛衣），确保不同分镜间的角色不会走样。

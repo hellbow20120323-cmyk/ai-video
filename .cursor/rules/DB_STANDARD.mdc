@@ -1,0 +1,32 @@
+---
+description: 数据库操作与身份安全准则。适用于所有涉及 Supabase Client、CRUD 操作以及 Device ID 过滤的代码。
+globs: ["src/services/dbService.ts", "src/lib/supabase.ts", "app/api/**/*.ts"]
+alwaysApply: true
+---
+
+
+核心原则：Device ID 自动绑定，服务层解耦。
+
+1. 身份识别逻辑 (Zero-Login)
+指纹机制：系统初始化时，自动检查 localStorage 中的 ai_video_device_id。
+
+自动补全：若不存在，使用 crypto.randomUUID() 生成并持久化。
+
+关联性：所有数据库操作（Select/Insert/Upsert）必须强制带上 .eq('device_id', currentDeviceId) 过滤条件。
+
+2. 数据库操作规范
+封装层 (Service Layer)：组件内部禁止直接调用 supabase.from(...)。必须通过 src/services/dbService.ts 中的封装函数（如 saveFinalVersion）进行调用。
+
+字段对齐要求：
+
+projects 表：包含 device_id。
+
+scripts 表：包含 project_id 外键及 story_outline。
+
+assets 表：包含 type (character/prop/scene) 约束。
+
+防错机制：
+
+使用 upsert 代替单纯的 insert，防止重复提交报错。
+
+彻底移除任何 undici 全局代理设置，确保数据库请求直连 Supabase，避免 ECONNRESET 错误。
